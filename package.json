@@ -1,0 +1,20 @@
+{
+  "name": "pf-builder-gates",
+  "private": true,
+  "description": "Root tooling (gate scripts, smoke test runner) plus npm workspaces so kit, every archetype, and every scratch prototype share one hoisted node_modules — avoids duplicate-React bugs. Each archetype/prototype app is otherwise a fully standalone Vite app with its own package.json.",
+  "workspaces": [
+    "kit",
+    "archetypes/*",
+    "prototypes/*"
+  ],
+  "scripts": {
+    "check:static": "tsx gates/check-static.ts",
+    "theme:gen": "tsx gates/theme-gen.ts",
+    "smoke": "playwright test -c gates/playwright.config.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.2",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}

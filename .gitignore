@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.vite/
+# prototypes/ is scratch for local build runners only — never committed.
+# A build.yml run checks out a clean copy, so nothing here is load-bearing,
+# but keeping it listed means an accidental local build never gets staged.
+prototypes/
+shots/
+cover.png
+test-results/
+playwright-report/
