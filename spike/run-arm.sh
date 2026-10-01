@@ -272,6 +272,12 @@ main() {
     fi
     # Supervisor / timeout verdicts. None of these are retried: a retry would
     # spend another request budget against the same stall (or same provider error).
+    # Exception: a spent request cap says nothing about the files. If any changed (dispatch 6: all 8 written
+    # by step 35 of 40), judge them at the gates and let attempt 2 finish the job. No change stays terminal.
+    if [ "$builder_outcome" = "builder_request_cap" ] && [ "$(json_field "$(check_allowlist)" changed)" != "0" ]; then
+      log "request cap hit with files changed: continuing to allowlist and gates"
+      builder_outcome=""
+    fi
     case "$builder_outcome" in
       builder_timeout|builder_hung|builder_request_cap|provider_error|provider_rate_limited|spend_ceiling|config_error)
         write_result "$builder_outcome" "none" "$attempt" "$builder_detail"
