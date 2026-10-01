@@ -24,6 +24,7 @@ const env = process.env;
 function missingReason(dir) {
   if (env.PREFLIGHT_RESULT && env.PREFLIGHT_RESULT !== "success")
     return ["preflight_gate_failed", "Preflight failed (no model accepted the full prompt, or a configured model is near deprecation); no arm ran."];
+  if (dir === ARMS[0].dir && env.INCLUDE_ARM_A !== "true") return ["excluded_by_input", "include_arm_a was off (retired: dispatch-1 builder verdict)."];
   if (dir === ARMS[0].dir && env.OR_A_OK !== "true") return ["skipped_preflight", "Arm A's OpenRouter model did not pass preflight."];
   if (dir === ARMS[1].dir) {
     if (env.OR_B_OK !== "true") return ["skipped_preflight", "Arm B's OpenRouter model did not pass preflight."];

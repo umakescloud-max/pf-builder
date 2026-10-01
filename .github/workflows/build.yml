@@ -19,6 +19,10 @@ on:
         description: "Arm C fallback, used only if nvidia_model is unlisted or rejects the full prompt in preflight."
         type: string
         default: "moonshotai/kimi-k3"
+      include_arm_a:
+        description: "Retired: Arm A (OpenCode x north-mini-code:free) - 25 reads, 0 writes in dispatch 1 (builder verdict). Quota freed."
+        type: boolean
+        default: false
       include_gemini_cli_arm:
         description: "Retired: Gemini CLI x OpenRouter (litellm proxy + selectedType pin; no outcome is attributable). Adapter kept."
         type: boolean
@@ -100,7 +104,7 @@ jobs:
 
   arm-a-opencode-openrouter:
     needs: provider-preflight
-    if: needs.provider-preflight.outputs.or_a_ok == 'true'
+    if: inputs.include_arm_a && needs.provider-preflight.outputs.or_a_ok == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -273,6 +277,7 @@ jobs:
           ARM_A_MODEL: ${{ inputs.arm_a_model }}
           ARM_B_MODEL: ${{ inputs.arm_b_model }}
           NVIDIA_MODEL: ${{ inputs.nvidia_model }}
+          INCLUDE_ARM_A: ${{ inputs.include_arm_a }}
           INCLUDE_GEMINI_CLI_ARM: ${{ inputs.include_gemini_cli_arm }}
           INCLUDE_GEMINI_CONTROL: ${{ inputs.include_gemini_control }}
           PREFLIGHT_RESULT: ${{ needs.provider-preflight.result }}
