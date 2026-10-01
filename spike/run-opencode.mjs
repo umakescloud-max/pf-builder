@@ -31,6 +31,7 @@ const TIMEOUT_MS = +(env.PF_TIMEOUT_MS ?? 20 * 60_000);
 const SILENCE_MS = +(env.PF_SILENCE_MS ?? 300_000);
 const REQ_CAP = +(env.PF_REQ_CAP ?? 40);
 const PACE_MS = +(env.PF_PACE_MS ?? 4000);
+const COOLDOWN_MS = +(env.PF_COOLDOWN_MS ?? 20_000); // after a 429, OpenCode retries land after this, not 4 s later
 const GRACE_MS = +(env.PF_GRACE_MS ?? 15_000); // after a terminal event, let it exit on its own
 const NV_UPSTREAM = env.PF_NVIDIA_UPSTREAM ?? "https://integrate.api.nvidia.com";
 
@@ -59,7 +60,9 @@ if (!state.outcome && paced) {
         body: ["GET", "HEAD"].includes(req.method) ? undefined : Buffer.concat(chunks),
       });
       if (up.status === 429) {
-        if (++consecutive429 >= 3) { finish("provider_rate_limited", "3 consecutive 429s from NVIDIA"); stop(); }
+        const ra = up.headers.get("retry-after"), body = (await up.clone().text().catch(() => "")).slice(0, 400);
+        nextSlot = Math.max(nextSlot, Date.now() + Math.min(COOLDOWN_MS, 60_000, ra ? +ra * 1000 || COOLDOWN_MS : COOLDOWN_MS));
+        if (++consecutive429 >= 3) { finish("provider_rate_limited", `3 consecutive 429s from NVIDIA (retry-after: ${ra ?? "none"}; body: ${body}; ${state.steps} step(s) finished)`); stop(); }
       } else consecutive429 = 0;
       const h = Object.fromEntries([...up.headers].filter(([k]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k)));
       res.writeHead(up.status, h);

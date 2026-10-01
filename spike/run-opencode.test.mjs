@@ -70,7 +70,7 @@ test("NVIDIA proxy: 3 consecutive 429s abort as provider_rate_limited, requests 
   await new Promise((r) => up.listen(0, "127.0.0.1", r));
   const result = path.join(dir, "r-nv.json");
   const child = spawn(process.execPath, [path.resolve("spike/run-opencode.mjs"), "--model", "nvidia/nemotron-3-ultra-550b-a55b", "--prompt-file", path.join(dir, "prompt.txt"), "--log", path.join(dir, "b.log"), "--result", result, "--paced-nvidia"], {
-    env: { ...process.env, OPENCODE_BIN: process.execPath, OPENCODE_BIN_ARGS: JSON.stringify([stub]), STUB_MODE: "nvidia", PF_NVIDIA_UPSTREAM: `http://127.0.0.1:${up.address().port}`, PF_PACE_MS: "150", PF_SILENCE_MS: "60000", NVIDIA_API_KEY: "k" },
+    env: { ...process.env, OPENCODE_BIN: process.execPath, OPENCODE_BIN_ARGS: JSON.stringify([stub]), STUB_MODE: "nvidia", PF_NVIDIA_UPSTREAM: `http://127.0.0.1:${up.address().port}`, PF_PACE_MS: "150", PF_COOLDOWN_MS: "300", PF_SILENCE_MS: "60000", NVIDIA_API_KEY: "k" },
   });
   await new Promise((r) => child.on("close", r));
   up.close();

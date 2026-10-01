@@ -139,7 +139,9 @@ if (!orKey) {
       const days = (Date.parse(meta.expiration_date) - Date.now()) / 86_400_000;
       if (days < DEPRECATION_WINDOW_DAYS) problems.push(`OpenRouter model ${model} expires ${meta.expiration_date}`);
     }
-    const r = await chat(OR_BASE, orKey, model, prompt, 4096);
+    // Same model, same prompt: upstream shared-pool 429s are transient, so wait and re-ask (3 tries, 25 s apart). No substitution.
+    let r = await chat(OR_BASE, orKey, model, prompt, 4096);
+    for (let i = 0; i < 2 && r.status === 429; i++) { await sleep(25_000); r = await chat(OR_BASE, orKey, model, prompt, 4096); }
     r.accepted = accepted(r);
     r.context_length = meta.context_length ?? null;
     r.pricing = meta.pricing ?? null;
