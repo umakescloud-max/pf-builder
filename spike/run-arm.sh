@@ -35,6 +35,17 @@ reset_prototype() {
   rm -rf "$PROTO_DIR"
   mkdir -p "$ROOT/prototypes"
   cp -r "$STARTER_DIR" "$PROTO_DIR"
+  # The starter's package.json "name" must not collide with the archetype's
+  # own workspace entry — npm refuses to resolve two workspaces with the
+  # same name. check-static.ts already expects this (it deletes "name"
+  # before diffing), this just does the actual rename.
+  node -e "
+    const fs = require('node:fs');
+    const p = '$PROTO_DIR/package.json';
+    const pkg = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    pkg.name = '$PROTO_NAME';
+    fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
+  "
 }
 
 # Scans a log for best-effort request/token signals and known Groq/Gemini
