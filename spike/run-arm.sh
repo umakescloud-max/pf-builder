@@ -217,6 +217,12 @@ spend_check() {  # $1 = label, $2 = attempts so far
   esac
 }
 
+# What the builder (and the report) see of a failed gate. A Playwright log ends with the numbered failure
+# blocks; the tail shows only the last test, so start at failure 1 and keep the head. Other gates: the tail.
+gate_feedback() {
+  if grep -q '^  1) ' "$1" 2>/dev/null; then sed -n '/^  1) /,$p' "$1" | head -c 6000; else tail -c 4000 "$1" 2>/dev/null || echo 'see gate log'; fi
+}
+
 run_gates() {
   # Order: typecheck -> build -> check:static -> smoke. Prints the first failing gate, or "pass".
   pushd "$PROTO_DIR" >/dev/null
@@ -332,12 +338,12 @@ main() {
     fi
 
     if [ "$attempt" -eq 2 ]; then
-      write_result "gate_failed" "$gate" "$attempt" "$(tail -c 4000 "$OUT_DIR/gate-${gate//:/-}.log" 2>/dev/null || echo 'see gate log')"
+      write_result "gate_failed" "$gate" "$attempt" "$(gate_feedback "$OUT_DIR/gate-${gate//:/-}.log")"
       exit 0
     fi
 
     fix_block="The $gate gate failed. Fix only this — do not refactor or touch anything else:
-$(tail -c 4000 "$OUT_DIR/gate-${gate//:/-}.log" 2>/dev/null || echo 'see gate log')"
+$(gate_feedback "$OUT_DIR/gate-${gate//:/-}.log")"
     attempt=$((attempt + 1))
   done
 }
