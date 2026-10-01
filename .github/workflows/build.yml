@@ -1,0 +1,141 @@
+name: Phase 2 builder spike
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "20"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required secrets are present
+        run: |
+          missing=""
+          [ -z "${{ secrets.GEMINI_API_KEY }}" ] && missing="$missing GEMINI_API_KEY"
+          [ -z "${{ secrets.GROQ_API_KEY }}" ] && missing="$missing GROQ_API_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required secret(s):$missing — set them in repo Settings > Secrets and variables > Actions before dispatching this workflow."
+            exit 1
+          fi
+          echo "Required secrets present."
+
+  arm-1-gemini-cli:
+    needs: preflight
+    runs-on: ubuntu-latest
+    outputs:
+      quota_exhausted: ${{ steps.run.outputs.quota_exhausted }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm install -g @google/gemini-cli
+      - id: run
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          chmod +x spike/run-arm.sh
+          ./spike/run-arm.sh gemini-cli gemini-cli gemini-flash-latest
+          code=$?
+          if [ "$code" -eq 2 ]; then echo "quota_exhausted=true" >> "$GITHUB_OUTPUT"; else echo "quota_exhausted=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-arm-1-gemini-cli
+          path: spike/out/gemini-cli
+          if-no-files-found: ignore
+
+  arm-2-aider-gemini:
+    needs: arm-1-gemini-cli
+    if: always() && needs.arm-1-gemini-cli.outputs.quota_exhausted != 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      quota_exhausted: ${{ steps.run.outputs.quota_exhausted }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PYTHON_VERSION }}" }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: pip install aider-chat
+      - id: run
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          chmod +x spike/run-arm.sh
+          ./spike/run-arm.sh aider-gemini aider gemini/gemini-flash-latest
+          code=$?
+          if [ "$code" -eq 2 ]; then echo "quota_exhausted=true" >> "$GITHUB_OUTPUT"; else echo "quota_exhausted=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-arm-2-aider-gemini
+          path: spike/out/aider-gemini
+          if-no-files-found: ignore
+
+  arm-3-aider-groq:
+    needs: arm-2-aider-gemini
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PYTHON_VERSION }}" }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: pip install aider-chat
+      - env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          chmod +x spike/run-arm.sh
+          ./spike/run-arm.sh aider-groq aider groq/openai/gpt-oss-120b
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-arm-3-aider-groq
+          path: spike/out/aider-groq
+          if-no-files-found: ignore
+
+  report:
+    needs: [arm-1-gemini-cli, arm-2-aider-gemini, arm-3-aider-groq]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: spike/out
+          pattern: "spike-arm-*"
+          merge-multiple: false
+      - name: Build results table and pick a winner
+        run: node spike/report.mjs
+      - name: Publish results to spike-results branch
+        run: |
+          git config user.name "umakescloud-max"
+          git config user.email "umakescloud@gmail.com"
+          git checkout --orphan spike-results-tmp
+          git rm -rf . >/dev/null 2>&1 || true
+          mkdir -p results
+          cp spike/DECISIONS-spike-table.md results/ 2>/dev/null || true
+          cp spike/winner-cover.png results/cover.png 2>/dev/null || true
+          cp spike/winner-denials.png results/denials-1280x800.png 2>/dev/null || true
+          git add results
+          git commit -m "Phase 2 spike results $(date -u +%F)" || echo "nothing to commit"
+          git branch -D spike-results 2>/dev/null || true
+          git branch -m spike-results
+          git push -f origin spike-results

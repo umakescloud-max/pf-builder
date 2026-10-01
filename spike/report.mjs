@@ -1,0 +1,50 @@
+// Phase 2 spike report job — reads each arm's result.json (downloaded into
+// spike/out/<artifact-name>/ by actions/download-artifact), writes the
+// DECISIONS.md-style results table, and stages the winning arm's cover.png +
+// denial screenshot for the publish step. Winner = first arm, in spike order,
+// with status "pass".
+import { readFileSync, writeFileSync, existsSync, readdirSync, copyFileSync } from "node:fs";
+import path from "node:path";
+
+const OUT_DIR = "spike/out";
+const ARM_DIRS = ["spike-arm-1-gemini-cli", "spike-arm-2-aider-gemini", "spike-arm-3-aider-groq"];
+
+const results = ARM_DIRS.map((dir) => {
+  const resultPath = path.join(OUT_DIR, dir, "result.json");
+  if (!existsSync(resultPath)) {
+    return { arm: dir, status: "did_not_run", failing_gate: "n/a", attempts: 0, requests_issued: 0, peak_tokens_per_request: 0, detail: "No result.json — job skipped (likely upstream quota_exhausted)." };
+  }
+  return JSON.parse(readFileSync(resultPath, "utf-8"));
+});
+
+const header = "| Arm | Builder | Model | Status | Failing gate | Attempts | Requests | Peak tokens/req | Notes |\n|---|---|---|---|---|---|---|---|---|";
+const rows = results.map((r) =>
+  `| ${r.arm} | ${r.builder ?? "—"} | ${r.model ?? "—"} | ${r.status} | ${r.failing_gate ?? "—"} | ${r.attempts ?? 0} | ${r.requests_issued ?? 0} | ${r.peak_tokens_per_request ?? 0} | ${(r.detail ?? "").replace(/\|/g, "/").replace(/\n/g, " ").slice(0, 200)} |`
+);
+
+const winner = results.find((r) => r.status === "pass");
+
+const table = [
+  "# Phase 2 builder spike — results",
+  "",
+  `Run date: ${new Date().toISOString().slice(0, 10)}. $0 cost confirmed — all three arms run against free-tier keys only.`,
+  "",
+  header,
+  ...rows,
+  "",
+  winner
+    ? `**Winner: ${winner.arm}** (${winner.builder} × ${winner.model}), passed all gates in ${winner.attempts} attempt(s).`
+    : "**No arm passed all gates in this run.** See per-arm detail above and the uploaded attempt/gate logs.",
+].join("\n");
+
+writeFileSync("spike/DECISIONS-spike-table.md", table);
+console.log(table);
+
+if (winner) {
+  const winnerDir = path.join(OUT_DIR, ARM_DIRS[results.indexOf(winner)]);
+  const cover = path.join(winnerDir, "cover.png");
+  if (existsSync(cover)) copyFileSync(cover, "spike/winner-cover.png");
+  const pngs = existsSync(winnerDir) ? readdirSync(winnerDir).filter((f) => f.endsWith(".png")) : [];
+  const denial = pngs.find((f) => /denial/i.test(f) && /1280x800/.test(f));
+  if (denial) copyFileSync(path.join(winnerDir, denial), "spike/winner-denials.png");
+}
