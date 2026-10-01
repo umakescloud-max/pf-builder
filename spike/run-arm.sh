@@ -123,7 +123,7 @@ run_builder() {
     exit_code=$?
   elif [ "$BUILDER" = "opencode" ]; then
     printf '%s' "$prompt_text" >"$prompt_file"
-    # The supervisor owns the 20 min ceiling, the 180 s silence rule and the
+    # The supervisor owns the 20 min ceiling, the 300 s silence rule and the
     # request cap, and never trusts opencode's exit code (it can hang forever).
     local paced=""
     [ "$PROVIDER_MODE" = "nvidia" ] && paced="--paced-nvidia"

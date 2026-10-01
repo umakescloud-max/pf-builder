@@ -49,12 +49,9 @@ match the brief exactly, using only what's available to you.
 - The app must render correctly at both 1280×800 and 390×844 (no
   horizontal overflow, no clipped content, touch-sized tap targets at
   mobile width).
-- Before you finish, run (in this order) and fix any failure before
-  moving to the next: `npm run typecheck`, `npm run build` (both from your
-  working directory), then `npm run check:static -- prototypes/<repo-name>
-  archetypes/prior-auth-rcm` from the repository root (two levels above your
-  working directory; `<repo-name>` is your working directory's name). Do not
-  report completion if any of these fail.
+- Before you finish, run (in this order, from your working directory) and fix
+  any failure before moving to the next: `npm run typecheck`, then
+  `npm run build`. Do not report completion if either fails.
 
 ## On retry (fix loop)
 
@@ -67,5 +64,5 @@ risk introducing new gate failures.
 ## Output
 
 When finished, state clearly which files you changed and confirm
-`typecheck`, `build`, and `check:static` all passed. The orchestrating
-workflow runs `smoke` separately — you do not run Playwright yourself.
+`typecheck` and `build` both passed. The orchestrating
+workflow runs the static gate and `smoke` separately — you do not run Playwright yourself.

@@ -5,8 +5,8 @@
 // first stream (reported Aug 2026), so the exit code is NOT the completion
 // signal. The --format json stream is: terminal event = step_finish whose
 // reason is not "tool-calls" (observed v1.18.31: reason "stop"), or an error
-// event. Silence for 180 s with no terminal event = builder_hung; 20 min total
-// = builder_timeout; 40 steps without finishing = builder_request_cap.
+// event. Silence for 300 s with no terminal event = builder_hung; 20 min total
+// = builder_timeout; 25 steps without finishing = builder_request_cap.
 //
 // With --paced-nvidia, `--model` is the bare NIM id and calls go through a local
 // proxy that spaces upstream requests 4 s apart and aborts the arm on 3
@@ -28,8 +28,8 @@ const model = arg("model"), promptFile = arg("prompt-file"), logFile = arg("log"
 const paced = process.argv.includes("--paced-nvidia");
 const env = process.env;
 const TIMEOUT_MS = +(env.PF_TIMEOUT_MS ?? 20 * 60_000);
-const SILENCE_MS = +(env.PF_SILENCE_MS ?? 180_000);
-const REQ_CAP = +(env.PF_REQ_CAP ?? 40);
+const SILENCE_MS = +(env.PF_SILENCE_MS ?? 300_000);
+const REQ_CAP = +(env.PF_REQ_CAP ?? 25);
 const PACE_MS = +(env.PF_PACE_MS ?? 4000);
 const GRACE_MS = +(env.PF_GRACE_MS ?? 15_000); // after a terminal event, let it exit on its own
 const NV_UPSTREAM = env.PF_NVIDIA_UPSTREAM ?? "https://integrate.api.nvidia.com";
