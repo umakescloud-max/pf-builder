@@ -220,29 +220,34 @@ spend_check() {  # $1 = label, $2 = attempts so far
 # What the builder (and the report) see of a failed gate. A Playwright log ends with the numbered failure
 # blocks; the tail shows only the last test, so start at failure 1 and keep the head. Other gates: the tail.
 gate_feedback() {
-  if grep -q '^  1) ' "$1" 2>/dev/null; then sed -n '/^  1) /,$p' "$1" | head -c 6000; else tail -c 4000 "$1" 2>/dev/null || echo 'see gate log'; fi
+  # Playwright: the numbered failure blocks (the tail shows only the last test). tsc: the head (first errors
+  # first). Anything else: the tail.
+  if grep -q '^  1) ' "$1" 2>/dev/null; then sed -n '/^  1) /,$p' "$1" | head -c 6000
+  elif [ "$2" = "typecheck" ]; then head -c 5000 "$1" 2>/dev/null || echo 'see gate log'
+  else tail -c 4000 "$1" 2>/dev/null || echo 'see gate log'; fi
 }
 
+# Prints "pass" or the space-separated failing gates. typecheck and check:static are independent, so both
+# always run and a builder sees every failure at once (dispatch 8/9: one gate per attempt needed 3 attempts).
+# build needs a clean typecheck; smoke needs everything else clean.
 run_gates() {
-  # Order: typecheck -> build -> check:static -> smoke. Prints the first failing gate, or "pass".
+  local failed=""
   pushd "$PROTO_DIR" >/dev/null
-  if ! npm run --silent typecheck >"$OUT_DIR/gate-typecheck.log" 2>&1; then
-    popd >/dev/null; echo "typecheck"; return
-  fi
-  if ! npm run --silent build >"$OUT_DIR/gate-build.log" 2>&1; then
-    popd >/dev/null; echo "build"; return
-  fi
+  npm run --silent typecheck >"$OUT_DIR/gate-typecheck.log" 2>&1 || failed="typecheck"
+  [ -n "$failed" ] || npm run --silent build >"$OUT_DIR/gate-build.log" 2>&1 || { [ -n "$failed" ] || failed="build"; }
   popd >/dev/null
-
-  if ! (cd "$ROOT" && npm run --silent check:static -- "$PROTO_DIR" "$STARTER_DIR") >"$OUT_DIR/gate-check-static.log" 2>&1; then
-    echo "check:static"; return
+  (cd "$ROOT" && npm run --silent check:static -- "$PROTO_DIR" "$STARTER_DIR") >"$OUT_DIR/gate-check-static.log" 2>&1 || failed="$failed check:static"
+  if [ -z "$failed" ]; then
+    (cd "$ROOT" && PROTOTYPE_DIR="$PROTO_DIR" npm run --silent smoke) >"$OUT_DIR/gate-smoke.log" 2>&1 || failed="smoke"
   fi
+  failed="${failed# }"
+  echo "${failed:-pass}"
+}
 
-  if ! (cd "$ROOT" && PROTOTYPE_DIR="$PROTO_DIR" npm run --silent smoke) >"$OUT_DIR/gate-smoke.log" 2>&1; then
-    echo "smoke"; return
-  fi
-
-  echo "pass"
+# Feedback for every failing gate named in $1.
+all_feedback() {
+  local g
+  for g in $1; do printf '### %s\n%s\n\n' "$g" "$(gate_feedback "$OUT_DIR/gate-${g//:/-}.log" "$g")"; done
 }
 
 main() {
@@ -338,12 +343,12 @@ main() {
     fi
 
     if [ "$attempt" -eq 2 ]; then
-      write_result "gate_failed" "$gate" "$attempt" "$(gate_feedback "$OUT_DIR/gate-${gate//:/-}.log")"
+      write_result "gate_failed" "${gate// /,}" "$attempt" "$(all_feedback "$gate")"
       exit 0
     fi
 
-    fix_block="The $gate gate failed. Fix only this — do not refactor or touch anything else:
-$(gate_feedback "$OUT_DIR/gate-${gate//:/-}.log")"
+    fix_block="These gates failed: ${gate// /, }. Fix only what is listed, do not refactor or touch anything else:
+$(all_feedback "$gate")"
     attempt=$((attempt + 1))
   done
 }
