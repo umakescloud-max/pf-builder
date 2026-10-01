@@ -1,33 +1,37 @@
 #!/usr/bin/env bash
 # Phase 2 builder spike — runs one (builder, model) arm end to end:
-# clean copy -> builder (up to 2 attempts, fix-block on retry) -> allowlist
-# diff -> typecheck -> build -> check:static -> smoke. Writes spike/result.json
-# and copies shots/cover.png into spike/out/ for the report job to pick up.
+# clean copy -> baseline snapshot -> builder (up to 2 attempts, fix-block on
+# retry) -> allowlist check -> typecheck -> build -> check:static -> smoke.
+# Writes spike/out/<arm>/result.json and copies shots/cover.png next to it.
 #
-# Request/token accounting is best-effort, parsed from each CLI's own stdout —
-# neither Aider nor Gemini CLI exposes a structured per-call usage API here,
-# so counts are a floor, not an authoritative ledger. Good enough to compare
-# arms against each other, documented as such in DECISIONS.md.
+# usage: run-arm.sh <arm-id> <aider|opencode|gemini-cli> <model> [nvidia]
+#   4th arg "nvidia" = opencode goes through the paced NVIDIA proxy
+#   (run-opencode.mjs); <model> is then the bare NIM id.
+#
+# Request/token accounting is best-effort, parsed from each CLI's own output
+# (opencode: step_finish events; NVIDIA arm: the proxy's upstream request
+# count) — a floor, not an authoritative ledger. "unknown", never a false 0.
 set -uo pipefail
 
-ARM="$1"            # arm id, e.g. "aider-openrouter", "gemini-cli-openrouter", "aider-nvidia", "aider-gemini"
-BUILDER="$2"         # "gemini-cli" | "aider"
+ARM="$1"
+BUILDER="$2"         # "gemini-cli" | "aider" | "opencode"
 MODEL="$3"           # model string passed to the builder
+PROVIDER_MODE="${4:-}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Every OpenRouter call must be an explicit :free id; a paid call already slipped through once.
-case "$MODEL" in openrouter/*:free|openrouter/*) case "$MODEL" in *:free) ;; *) echo "refusing non-:free OpenRouter model $MODEL" >&2; exit 3;; esac;; esac
 PROTO_NAME="prior-auth-tracker-v1"
 PROTO_DIR="$ROOT/prototypes/$PROTO_NAME"
 STARTER_DIR="$ROOT/archetypes/prior-auth-rcm"
 # Snapshots of pf-engine/prompts/builder.md and fixtures/sample-brief.json:
-# pf-engine is not checked out in the CI job, so the old ../pf-engine paths
-# resolved to nothing and every builder got an empty prompt (run 4: 12 bytes).
+# pf-engine is not checked out in the CI job, so ../pf-engine paths resolve to
+# nothing (run 4: a 12-byte prompt).
 # ponytail: manual copies, re-copy when either source changes.
 BRIEF="$ROOT/spike/inputs/sample-brief.json"
 PROMPT="$ROOT/spike/inputs/builder.md"
 [ -s "$BRIEF" ] && [ -s "$PROMPT" ] || { echo "missing/empty spike inputs" >&2; exit 3; }
 OUT_DIR="$ROOT/spike/out/$ARM"
 mkdir -p "$OUT_DIR"
+# Outside the prototype dir, so the builder can never touch it.
+BASELINE="$ROOT/.pf/baseline.json"
 
 RESULT="$OUT_DIR/result.json"
 
@@ -37,17 +41,19 @@ quota_exhausted=false
 groq_reject=""
 provider_error=""
 rate_limited=""
+builder_outcome=""   # opencode supervisor verdict, or builder_timeout on exit 124
+builder_detail=""
 
 log() { echo "[$ARM] $*"; }
+json_str() { node -e 'process.stdout.write(JSON.stringify(require("fs").readFileSync(0,"utf8").trim()))'; }
+json_num_or_unknown() { [ "$1" = "unknown" ] && echo '"unknown"' || echo "$1"; }
 
 reset_prototype() {
   rm -rf "$PROTO_DIR"
   mkdir -p "$ROOT/prototypes"
   cp -r "$STARTER_DIR" "$PROTO_DIR"
-  # The starter's package.json "name" must not collide with the archetype's
-  # own workspace entry — npm refuses to resolve two workspaces with the
-  # same name. check-static.ts already expects this (it deletes "name"
-  # before diffing), this just does the actual rename.
+  # The starter's package.json "name" must not collide with the archetype's own
+  # workspace entry — npm refuses two workspaces with the same name.
   node -e "
     const fs = require('node:fs');
     const p = '$PROTO_DIR/package.json';
@@ -55,14 +61,15 @@ reset_prototype() {
     pkg.name = '$PROTO_NAME';
     fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
   "
-  # Pre-install the archetype's own deps into the workspace so the builder
-  # never has a reason to touch package.json itself (run 2's arm 2 flagged
-  # touched_forbidden on it for exactly this).
+  # Pre-install the archetype's deps so the builder never has a reason to touch package.json.
   (cd "$ROOT" && npm install --no-audit --no-fund >/dev/null 2>&1) || true
+  # Baseline AFTER the rename/install and BEFORE any builder runs.
+  node "$ROOT/spike/check-allowlist.mjs" snapshot "$PROTO_DIR" "$BASELINE"
 }
 
-# Scans a log for best-effort request/token signals and known Groq/Gemini
-# rejection patterns. Updates the shared counters above.
+# Counters always; regex classification only for builders without their own
+# verdict (opencode's supervisor classifies from the JSON stream, and a regex
+# over an agent transcript full of source code would false-positive).
 scan_log() {
   local log_file="$1"
   local parsed
@@ -76,25 +83,21 @@ scan_log() {
   if [ "$tok" != "unknown" ] && { [ "$peak_tokens" = "unknown" ] || [ "$tok" -gt "$peak_tokens" ] 2>/dev/null; }; then
     peak_tokens=$tok
   fi
+  [ "$BUILDER" = "opencode" ] && return
   # Daily quota is terminal for that provider; a per-minute limit is not.
-  # Gemini CLI's 429 text has no quotaId (run 5: "limit: 20" was labelled
-  # per-minute) but names the class itself: TerminalQuotaError / "exhausted
-  # your daily quota" = daily, RetryableQuotaError = per-minute. OpenRouter
-  # names "free-models-per-day" / "free-models-per-min".
   if grep -qE 'PerDay|TerminalQuotaError|exhausted your daily quota|free-models-per-day' "$log_file"; then
     quota_exhausted=true
   elif grep -qE 'RESOURCE_EXHAUSTED|"code": ?429|quota exceeded|rate.?limit exceeded|RateLimitError|RetryableQuotaError' "$log_file"; then
-    rate_limited="$(grep -E 'quotaId|Quota exceeded for metric|[Rr]ate limit' "$log_file" | head -2 | tr '
-' ' ')"
+    rate_limited="$(grep -E 'quotaId|Quota exceeded for metric|[Rr]ate limit' "$log_file" | head -2 | tr '\n' ' ')"
   fi
-  # Auth / permission / model-not-found are terminal: the builder never did
-  # any work, so running the gates on the untouched starter would report a
-  # meaningless gate failure (run 3, arm 2: two 403s, then "check:static").
-  if grep -qE 'PERMISSION_DENIED|UNAUTHENTICATED|AuthenticationError|NotFoundError|"code": ?(401|402|403|404)|Payment Required|[Mm]odel .{0,80}(not found|does not exist)|is not found for API version|No endpoints found' "$log_file"; then
-    provider_error="$(grep -E 'PERMISSION_DENIED|UNAUTHENTICATED|AuthenticationError|NotFoundError|"code": ?(401|402|403|404)|Payment Required|[Mm]odel .{0,80}(not found|does not exist)|is not found for API version|No endpoints found|"message"' "$log_file" | head -3 | tr '\n' ' ')"
+  # Auth / permission / model-not-found / finish_reason:error are terminal for
+  # the arm: the builder did no (trustworthy) work, and the same model is not retried.
+  local perr_re='PERMISSION_DENIED|UNAUTHENTICATED|AuthenticationError|NotFoundError|"code": ?(401|402|403|404)|Payment Required|[Mm]odel .{0,80}(not found|does not exist)|is not found for API version|No endpoints found|finish_reason.{0,40}error'
+  if grep -qE "$perr_re" "$log_file"; then
+    provider_error="$(grep -E "$perr_re|\"message\"" "$log_file" | head -3 | tr '\n' ' ')"
+    tail -c 4000 "$log_file" >"$OUT_DIR/raw-provider-error.txt"
   fi
-  # Request-size rejection only on explicit phrases (the old bare '413'/'tpm'
-  # also matched stack-trace line numbers).
+  # Request-size rejection only on explicit phrases (a bare '413' matched stack-trace line numbers).
   local size_re='Request too large|Limit [0-9]+, Requested [0-9]+|payload too large|HTTP 413|status(Code)?[": =]+413|context_length_exceeded|maximum context length'
   if grep -qiE "$size_re" "$log_file"; then
     groq_reject="$(grep -iE "$size_re" "$log_file" | head -1)"
@@ -104,33 +107,53 @@ scan_log() {
 run_builder() {
   local attempt="$1" fix_block="$2"
   local log_file="$OUT_DIR/attempt-$attempt.log"
+  local prompt_file="$OUT_DIR/attempt-$attempt-prompt.txt"
   local prompt_text
   prompt_text="$(cat "$PROMPT")"$'\n\n## Brief\n'"$(cat "$BRIEF")"
   if [ -n "$fix_block" ]; then
     prompt_text="$prompt_text"$'\n\n## Fix block (attempt '"$attempt"$')\n'"$fix_block"
   fi
+  builder_outcome=""
+  builder_detail=""
 
   pushd "$PROTO_DIR" >/dev/null
-  # 20-minute ceiling per attempt: a hung free endpoint must not eat the job.
+  local exit_code=0
   if [ "$BUILDER" = "gemini-cli" ]; then
     GEMINI_CLI_TRUST_WORKSPACE=true timeout 1200 gemini -p "$prompt_text" --yolo --output-format json >"$log_file" 2>&1
+    exit_code=$?
+  elif [ "$BUILDER" = "opencode" ]; then
+    printf '%s' "$prompt_text" >"$prompt_file"
+    # The supervisor owns the 20 min ceiling, the 180 s silence rule and the
+    # request cap, and never trusts opencode's exit code (it can hang forever).
+    local paced=""
+    [ "$PROVIDER_MODE" = "nvidia" ] && paced="--paced-nvidia"
+    node "$ROOT/spike/run-opencode.mjs" --model "$MODEL" --prompt-file "$prompt_file" --log "$log_file" --result "$OUT_DIR/attempt-$attempt-opencode.json" $paced
+    builder_outcome=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(r.outcome)' "$OUT_DIR/attempt-$attempt-opencode.json" 2>/dev/null || echo builder_hung)
+    builder_detail=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(r.detail)' "$OUT_DIR/attempt-$attempt-opencode.json" 2>/dev/null)
   else
-    echo "$prompt_text" >"$OUT_DIR/attempt-$attempt-prompt.txt"
-    # prototypes/ is gitignored in pf-builder, and aider skips gitignored
-    # files, so give the prototype its own repo (removed again below).
-    # The editable allowlist is passed explicitly so aider never has to ask
-    # for files; --weak-model/--no-auto-commits stop it spending extra
-    # requests on commit messages with some other model.
+    printf '%s' "$prompt_text" >"$prompt_file"
+    # prototypes/ is gitignored in pf-builder and aider skips gitignored files,
+    # so give the prototype its own throwaway repo (removed again below).
+    # --edit-format diff is pinned: left to infer from the model id, aider picks
+    # whole-file for unknown models and re-emits the entire app every response.
     [ -d .git ] || { git init -q && git add -A && git -c user.name=pf -c user.email=pf@example.invalid commit -qm start; }
-    timeout 1200 aider --message-file "$OUT_DIR/attempt-$attempt-prompt.txt"       --model "$MODEL" --weak-model "$MODEL" --yes-always --no-stream --no-pretty       --no-auto-commits --no-gitignore --no-check-update --no-analytics       src/screens/*.tsx src/nav.ts src/seed.ts src/tour.json >"$log_file" 2>&1
+    timeout 1200 aider --message-file "$prompt_file" --model "$MODEL" --weak-model "$MODEL" --edit-format diff \
+      --yes-always --no-stream --no-pretty --no-auto-commits --no-gitignore --no-check-update --no-analytics \
+      src/screens/*.tsx src/nav.ts src/seed.ts src/tour.json >"$log_file" 2>&1
+    exit_code=$?
   fi
-  local exit_code=$?
   rm -rf .git
   popd >/dev/null
+  # timeout(1) exits 124 on expiry; that is a ran-but-did-not-finish verdict.
+  if [ "$exit_code" -eq 124 ]; then builder_outcome="builder_timeout"; builder_detail="timeout 1200s expired"; fi
   scan_log "$log_file"
-  # Gemini CLI via the LiteLLM proxy: the proxy log is the only request
-  # ledger (the CLI's JSON stats name models, not requests). A floor: litellm
-  # internal retries are not visible. Overrides the CLI-log count.
+  if [ "$BUILDER" = "opencode" ]; then
+    local pr
+    pr=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(r.proxy_requests)' "$OUT_DIR/attempt-$attempt-opencode.json" 2>/dev/null)
+    case "$pr" in ''|unknown) ;; *) requests=$pr ;; esac   # proxy count includes 429 retries
+    grep -qE 'PerDay|free-models-per-day' <<<"$builder_detail" && quota_exhausted=true
+  fi
+  # Gemini CLI via the LiteLLM proxy: the proxy log is the only request ledger.
   if [ -n "${PROXY_LOG:-}" ] && [ -f "$PROXY_LOG" ]; then
     local total n_proxy
     total=$(wc -l <"$PROXY_LOG")
@@ -139,16 +162,13 @@ run_builder() {
     proxy_requests=$((${proxy_requests:-0} + n_proxy))
     [ "$proxy_requests" -gt 0 ] && requests=$proxy_requests
   fi
-  return $exit_code
 }
 
-check_allowlist() {
-  node "$ROOT/spike/check-allowlist.mjs" "$STARTER_DIR" "$PROTO_DIR"
-}
+# Prints the allowlist verdict as JSON {"forbidden":[...],"changed":n}.
+check_allowlist() { node "$ROOT/spike/check-allowlist.mjs" check "$PROTO_DIR" "$BASELINE"; }
+json_field() { node -e 'const r=JSON.parse(process.argv[1]);const v=r[process.argv[2]];console.log(Array.isArray(v)?v.join(" "):v)' "$1" "$2"; }
 
-json_num_or_unknown() {
-  [ "$1" = "unknown" ] && echo '"unknown"' || echo "$1"
-}
+builder_version() { { opencode --version || aider --version || gemini --version; } 2>/dev/null | head -1; }
 
 write_result() {
   local status="$1" gate="$2" attempts="$3" detail="$4"
@@ -163,16 +183,17 @@ write_result() {
   "requests_issued": $(json_num_or_unknown "$requests"),
   "peak_tokens_per_request": $(json_num_or_unknown "$peak_tokens"),
   "quota_exhausted": $quota_exhausted,
-  "groq_reject_reason": $( [ -n "$groq_reject" ] && printf '%s' "$groq_reject" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read().strip()))' || echo null ),
-  "detail": $(printf '%s' "$detail" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read().strip()))')
+  "node_version": "$(node -v)",
+  "builder_version": $(builder_version | json_str),
+  "groq_reject_reason": $( [ -n "$groq_reject" ] && printf '%s' "$groq_reject" | json_str || echo null ),
+  "detail": $(printf '%s' "$detail" | json_str)
 }
 JSON
   log "result: $status ($gate)"
 }
 
 run_gates() {
-  # Order: typecheck -> build -> check:static -> smoke. Returns the name of
-  # the first failing gate on stdout, or "pass" plus nothing.
+  # Order: typecheck -> build -> check:static -> smoke. Prints the first failing gate, or "pass".
   pushd "$PROTO_DIR" >/dev/null
   if ! npm run --silent typecheck >"$OUT_DIR/gate-typecheck.log" 2>&1; then
     popd >/dev/null; echo "typecheck"; return
@@ -182,11 +203,11 @@ run_gates() {
   fi
   popd >/dev/null
 
-  if ! npm run --silent check:static -- "$PROTO_DIR" "$STARTER_DIR" >"$OUT_DIR/gate-check-static.log" 2>&1; then
+  if ! (cd "$ROOT" && npm run --silent check:static -- "$PROTO_DIR" "$STARTER_DIR") >"$OUT_DIR/gate-check-static.log" 2>&1; then
     echo "check:static"; return
   fi
 
-  if ! PROTOTYPE_DIR="$PROTO_DIR" npm run --silent smoke >"$OUT_DIR/gate-smoke.log" 2>&1; then
+  if ! (cd "$ROOT" && PROTOTYPE_DIR="$PROTO_DIR" npm run --silent smoke) >"$OUT_DIR/gate-smoke.log" 2>&1; then
     echo "smoke"; return
   fi
 
@@ -194,6 +215,13 @@ run_gates() {
 }
 
 main() {
+  log "node $(node -v); builder $BUILDER $(builder_version); model $MODEL"
+  # Config guards happen at the call site: a bad id aborts the arm, never reaches a provider.
+  case "$MODEL" in openrouter/*) case "$MODEL" in *:free) ;; *) write_result "config_error" "none" 0 "refusing non-:free OpenRouter model $MODEL"; exit 0;; esac;; esac
+  if [ "$BUILDER" = "opencode" ]; then
+    case "$MODEL" in *[gG]emini*|google/*) write_result "config_error" "none" 0 "OpenCode must never run against Gemini ($MODEL)"; exit 0;; esac
+  fi
+
   reset_prototype
   local attempt=1 fix_block=""
 
@@ -202,9 +230,16 @@ main() {
     run_builder "$attempt" "$fix_block"
 
     if [ "$quota_exhausted" = true ]; then
-      write_result "quota_exhausted" "none" "$attempt" "Gemini quota exhausted mid-spike — stop and resume next day, do not cut this run short."
-      exit 2  # distinct exit code: workflow should halt the whole spike, not just this arm
+      write_result "quota_exhausted" "none" "$attempt" "Provider daily quota exhausted — stop and resume next day, do not cut this run short. $builder_detail"
+      exit 2  # distinct exit code: workflow halts the shared-pool arms, not just this one
     fi
+    # Supervisor / timeout verdicts. None of these are retried: a retry would
+    # spend another request budget against the same stall (or same provider error).
+    case "$builder_outcome" in
+      builder_timeout|builder_hung|builder_request_cap|provider_error|provider_rate_limited|config_error)
+        write_result "$builder_outcome" "none" "$attempt" "$builder_detail"
+        exit 0;;
+    esac
     if [ -n "$provider_error" ]; then
       write_result "provider_error" "none" "$attempt" "$provider_error"
       exit 0
@@ -214,20 +249,21 @@ main() {
       exit 0
     fi
 
-    # Builder produced nothing (couldn't start, rate-limited out, empty reply):
-    # gates would just fail on the untouched starter and blame the wrong party.
-    if diff -rq --exclude=node_modules --exclude=dist --exclude=.git --exclude='.aider*' --exclude=package.json         "$STARTER_DIR" "$PROTO_DIR" >/dev/null 2>&1; then
+    local verdict forbidden changed
+    verdict="$(check_allowlist)"
+    forbidden="$(json_field "$verdict" forbidden)"
+    changed="$(json_field "$verdict" changed)"
+
+    # Builder produced nothing: gates would just fail on the untouched starter and blame the wrong party.
+    if [ "$changed" = "0" ]; then
       if [ -n "$rate_limited" ]; then
-        write_result "rate_limited" "none" "$attempt" "Builder made no changes; per-minute rate limit: $rate_limited"
+        write_result "provider_rate_limited" "none" "$attempt" "Builder made no changes; rate limit: $rate_limited"
       else
-        write_result "builder_no_changes" "none" "$attempt" "Builder exited without changing any file. Log tail: $(tail -c 600 "$OUT_DIR/attempt-$attempt.log" | tr '
-' ' ')"
+        write_result "builder_no_changes" "none" "$attempt" "Builder exited without changing any file. Log tail: $(tail -c 600 "$OUT_DIR/attempt-$attempt.log" | tr '\n' ' ')"
       fi
       exit 0
     fi
 
-    local forbidden
-    forbidden="$(check_allowlist)"
     if [ -n "$forbidden" ]; then
       if [ "$attempt" -eq 2 ]; then
         write_result "touched_forbidden" "allowlist" "$attempt" "Builder edited files outside the allowlist: $forbidden"

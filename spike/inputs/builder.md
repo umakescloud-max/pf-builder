@@ -15,11 +15,12 @@ match the brief exactly, using only what's available to you.
 
 ## Hard constraints — violating any of these fails the build automatically
 
-- You may only edit files under `prototypes/<repo-name>/src/screens/`,
-  `prototypes/<repo-name>/src/routes.tsx`, `prototypes/<repo-name>/src/seed.ts`,
-  and `prototypes/<repo-name>/src/tour.json`. Do not touch anything in
-  `kit/`, any `theme` file, `package.json`, `package-lock.json`, or any
-  brief file.
+- Your working directory is `prototypes/<repo-name>/`; all paths below are
+  relative to it. You may only edit files under `src/screens/` (new files
+  there are fine), `src/nav.ts`, `src/seed.ts`, and `src/tour.json`. Do not
+  create or edit any other file under `src/`, and do not touch anything in
+  the repository's `kit/`, `src/theme.ts`, `package.json`,
+  `package-lock.json`, or any brief file.
 - Do not add, remove, or upgrade any dependency.
 - Do not import any component not listed in the kit's component index.
 - Do not make network calls, reference remote images, or use any logo
@@ -49,8 +50,11 @@ match the brief exactly, using only what's available to you.
   horizontal overflow, no clipped content, touch-sized tap targets at
   mobile width).
 - Before you finish, run (in this order) and fix any failure before
-  moving to the next: `typecheck`, `build`, `check:static`. Do not report
-  completion if any of these fail.
+  moving to the next: `npm run typecheck`, `npm run build` (both from your
+  working directory), then `npm run check:static -- prototypes/<repo-name>
+  archetypes/prior-auth-rcm` from the repository root (two levels above your
+  working directory; `<repo-name>` is your working directory's name). Do not
+  report completion if any of these fail.
 
 ## On retry (fix loop)
 

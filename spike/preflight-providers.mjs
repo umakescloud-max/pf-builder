@@ -1,24 +1,30 @@
-// Extended provider preflight (run 6). Replaces the local run: for OpenRouter
-// and NVIDIA it sends the REAL builder prompt (builder.md + brief, ~16KB — the
-// exact text run-arm.sh gives a builder), not a ping, because "does the
-// provider accept a real prompt at all" is what killed Groq. Records every
-// response header verbatim (minus set-cookie) so limits are measured, not
-// documented. Never logs a key. Gemini is the control arm only and is not
-// called here (20 req/day; every preflight call would spend the arm's budget).
+// Provider preflight. For every configured arm model it (1) checks the id is in
+// the provider's live /models list (missing = that model fails, never
+// substituted), (2) actually CALLS it with the real ~16KB builder prompt (listed
+// != callable; a reasoning model gets 4096 tokens, never a tiny ceiling), and
+// (3) surfaces any deprecation/sunset header, failing loudly if a configured
+// model is deprecated within 14 days. Every response header is recorded
+// verbatim (minus set-cookie). Never logs a key. Gemini is not called here.
 //
-// Hard gate: exit 1 unless at least one provider accepts the full prompt.
-// Job outputs (GITHUB_OUTPUT): openrouter_ok, nvidia_ok, nvidia_arm.
+// NVIDIA calls are paced 1 per 4 s and abort only on 3 CONSECUTIVE 429s. There
+// is no burst test: a 20-request burst cannot measure a sequential agentic
+// workload, and its 429s only ever prevented data collection.
+//
+// Env: ARM_A_MODEL, ARM_B_MODEL (OpenRouter :free ids), NVIDIA_MODEL,
+// NVIDIA_FALLBACK_MODEL (explicitly configured, not a first-listed fallback).
+// Hard gate: exit 1 if no model accepts the prompt, or a configured model is
+// near deprecation. Job outputs: or_a_ok, or_b_ok, nvidia_ok, nvidia_model.
 import { readFileSync, writeFileSync, mkdirSync, appendFileSync } from "node:fs";
 
 const OR_BASE = "https://openrouter.ai/api/v1";
 const NV_BASE = "https://integrate.api.nvidia.com/v1";
-const OR_MODEL = process.env.OPENROUTER_MODEL || "poolside/laguna-s-2.1:free";
-// Informational full-prompt probes (arms only use OR_MODEL). Never substituted.
-const OR_EXTRA = ["cohere/north-mini-code:free", "qwen/qwen3.8-27b:free"].filter((m) => m !== OR_MODEL);
-const NV_MODEL = "nvidia/nemotron-3-super-120b-a12b";
-const NV_PROBE = ["nvidia/nemotron-3-ultra-550b-a55b", "moonshotai/kimi-k3", "z-ai/glm-5.3", "openai/gpt-oss-20b"];
-const NV_BURST = 15; // 1 full + 4 probes + 15 burst = 20 NVIDIA chat requests total
+const A_MODEL = process.env.ARM_A_MODEL || "cohere/north-mini-code:free";
+const B_MODEL = process.env.ARM_B_MODEL || "poolside/laguna-s-2.1:free";
+const NV_MODEL = process.env.NVIDIA_MODEL || "nvidia/nemotron-3-ultra-550b-a55b";
+const NV_FALLBACK = process.env.NVIDIA_FALLBACK_MODEL || "moonshotai/kimi-k3";
+const NV_PACE_MS = 4000;
 const MIN_PROMPT_TOKENS = 2500; // 16KB of prompt is ~4-5k tokens; fewer means it was not received
+const DEPRECATION_WINDOW_DAYS = 14;
 
 const prompt =
   readFileSync("spike/inputs/builder.md", "utf-8") +
@@ -26,7 +32,9 @@ const prompt =
   readFileSync("spike/inputs/sample-brief.json", "utf-8") +
   "\n\n## PREFLIGHT PROBE\nThis is a connectivity probe, not a build. Do not write code or files. Reply with exactly: OK";
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const allHeaders = (h) => Object.fromEntries([...h.entries()].filter(([k]) => k.toLowerCase() !== "set-cookie"));
+const problems = []; // loud failures, collected so the JSON artifact is still written
 
 async function chat(base, key, model, content, max_tokens) {
   // Every OpenRouter call must name an explicit :free id; one paid call already slipped through a fallback.
@@ -58,7 +66,26 @@ async function chat(base, key, model, content, max_tokens) {
   }
 }
 
-const accepted = (r) => r.ok && (r.prompt_tokens === null || r.prompt_tokens >= MIN_PROMPT_TOKENS);
+// finish_reason "error" with HTTP 200 is a provider failure, not an acceptance.
+const accepted = (r) => r.ok && r.finish_reason !== "error" && (r.prompt_tokens === null || r.prompt_tokens >= MIN_PROMPT_TOKENS);
+
+// Surface deprecation/sunset headers; flag a configured model that is gone or going within the window.
+function deprecation(provider, r) {
+  const found = Object.entries(r.headers ?? {}).filter(([k]) => /deprecat|sunset/i.test(k));
+  r.deprecation_headers = Object.fromEntries(found);
+  for (const [k, v] of found) {
+    const t = Date.parse(v);
+    if (Number.isNaN(t)) { console.log(`::warning::${provider} ${r.model}: unparsable ${k} header "${v}"`); continue; }
+    const days = (t - Date.now()) / 86_400_000;
+    console.log(`  ${provider} ${r.model}: ${k}=${v} (${days.toFixed(1)} days)`);
+    if (days < DEPRECATION_WINDOW_DAYS) problems.push(`${provider} model ${r.model} is deprecated within ${DEPRECATION_WINDOW_DAYS} days (${k}: ${v})`);
+  }
+}
+
+async function liveModels(base, key) {
+  const res = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${key}` } }).catch(() => null);
+  return res?.ok ? ((await res.json().catch(() => ({})))?.data ?? []) : null;
+}
 
 async function orKeyInfo(key) {
   const out = {};
@@ -75,88 +102,93 @@ async function orKeyInfo(key) {
   return out;
 }
 
+// One NVIDIA call, paced; retries only on 429 and gives up after 3 in a row.
+let lastNv = 0;
+async function nvChat(key, model, content, max_tokens) {
+  let r;
+  for (let i = 0; i < 3; i++) {
+    const wait = lastNv + NV_PACE_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    lastNv = Date.now();
+    r = await chat(NV_BASE, key, model, content, max_tokens);
+    if (r.status !== 429) return r;
+  }
+  r.classification = "provider_rate_limited";
+  return r;
+}
+
 const out = { prompt_bytes: Buffer.byteLength(prompt), openrouter: {}, nvidia: {} };
 
-// ---- OpenRouter ----
+// ---- OpenRouter: arms A and B ----
 const orKey = process.env.OPENROUTER_API_KEY;
+const orOk = {};
 if (!orKey) {
   out.openrouter.error = "OPENROUTER_API_KEY not set";
 } else {
   out.openrouter.key_before = await orKeyInfo(orKey);
-  const listRes = await fetch(`${OR_BASE}/models`, { headers: { Authorization: `Bearer ${orKey}` } }).catch(() => null);
-  const live = listRes?.ok ? ((await listRes.json().catch(() => ({})))?.data ?? []) : null;
-  const liveIds = live?.map((m) => m.id) ?? null;
-  const calls = [];
-  for (const model of [OR_MODEL, ...OR_EXTRA]) {
+  const live = await liveModels(OR_BASE, orKey);
+  out.openrouter.full_prompt = [];
+  for (const [arm, model] of [["a", A_MODEL], ["b", B_MODEL]]) {
     const meta = live?.find((m) => m.id === model);
-    if (liveIds && !meta) {
-      calls.push({ model, ok: false, accepted: false, error_body: "requested :free id not in live /models — provider fails, no substitution" });
+    if (!live || !meta) {
+      out.openrouter.full_prompt.push({ model, ok: false, accepted: false, error_body: live ? "requested :free id not in live /models — fails, no substitution" : "could not read /models" });
+      orOk[arm] = false;
       continue;
+    }
+    if (meta.expiration_date) {
+      const days = (Date.parse(meta.expiration_date) - Date.now()) / 86_400_000;
+      if (days < DEPRECATION_WINDOW_DAYS) problems.push(`OpenRouter model ${model} expires ${meta.expiration_date}`);
     }
     const r = await chat(OR_BASE, orKey, model, prompt, 4096);
     r.accepted = accepted(r);
-    r.context_length = meta?.context_length ?? null;
-    r.pricing = meta?.pricing ?? null;
-    calls.push(r);
+    r.context_length = meta.context_length ?? null;
+    r.pricing = meta.pricing ?? null;
+    r.expiration_date = meta.expiration_date ?? null;
+    deprecation("OpenRouter", r);
+    out.openrouter.full_prompt.push(r);
+    orOk[arm] = r.accepted === true;
   }
-  out.openrouter.full_prompt = calls;
-  out.openrouter.ping = await chat(OR_BASE, orKey, OR_MODEL, "Reply with exactly: OK", 1024);
   out.openrouter.key_after = await orKeyInfo(orKey);
-  out.openrouter.primary_model = OR_MODEL;
-  out.openrouter.primary_accepted = calls[0].accepted === true;
 }
 
-// ---- NVIDIA ----
+// ---- NVIDIA: arm C. Configured model first, then the configured fallback. ----
 const nvKey = process.env.NVIDIA_API_KEY;
-let nvBurst429 = 0;
+let nvModel = "";
 if (!nvKey) {
   out.nvidia.error = "NVIDIA_API_KEY not set";
 } else {
-  const full = await chat(NV_BASE, nvKey, NV_MODEL, prompt, 4096);
-  full.accepted = accepted(full);
-  out.nvidia.full_prompt = full;
-  out.nvidia.callable = [];
-  for (const model of NV_PROBE) {
-    const r = await chat(NV_BASE, nvKey, model, "Reply with exactly: OK", 1024);
-    r.callable = r.ok;
-    out.nvidia.callable.push(r);
+  const live = await liveModels(NV_BASE, nvKey);
+  out.nvidia.full_prompt = [];
+  for (const model of [NV_MODEL, NV_FALLBACK]) {
+    if (!live || !live.some((m) => m.id === model)) {
+      out.nvidia.full_prompt.push({ model, ok: false, accepted: false, error_body: live ? "id not in live /models — fails, no substitution" : "could not read /models" });
+      continue;
+    }
+    const r = await nvChat(nvKey, model, prompt, 4096);
+    r.accepted = accepted(r);
+    deprecation("NVIDIA", r);
+    out.nvidia.full_prompt.push(r);
+    if (r.accepted) { nvModel = model; break; }
   }
-  // Concurrent burst: finds whether a 429 appears and what it names (RPM / daily / token cap).
-  const burst = await Promise.all(Array.from({ length: NV_BURST }, () => chat(NV_BASE, nvKey, NV_MODEL, "Reply with exactly: OK", 64)));
-  nvBurst429 = burst.filter((r) => r.status === 429).length;
-  out.nvidia.burst = {
-    requests: NV_BURST,
-    status_counts: burst.reduce((a, r) => ((a[r.status ?? "err"] = (a[r.status ?? "err"] ?? 0) + 1), a), {}),
-    first_429_body: burst.find((r) => r.status === 429)?.error_body ?? null,
-    first_headers: burst[0].headers,
-    last_headers: burst[burst.length - 1].headers,
-    note: `${NV_BURST} concurrent requests; a ceiling above that is a lower bound only (burst cap ~20 requests total).`,
-  };
-  out.nvidia.chat_requests_total = 1 + NV_PROBE.length + NV_BURST;
+  out.nvidia.chosen_model = nvModel || null;
 }
 
-const orOk = out.openrouter.primary_accepted === true;
-const nvOk = out.nvidia.full_prompt?.accepted === true;
-// "Real headroom" = full prompt accepted and the whole burst got through without a 429.
-const nvArm = nvOk && nvBurst429 === 0 && out.nvidia.burst?.status_counts?.["200"] === NV_BURST;
-out.gate = { openrouter_ok: orOk, nvidia_ok: nvOk, nvidia_arm: nvArm, pass: orOk || nvOk };
+out.gate = { or_a_ok: orOk.a === true, or_b_ok: orOk.b === true, nvidia_ok: nvModel !== "", nvidia_model: nvModel, problems };
+out.gate.pass = (out.gate.or_a_ok || out.gate.or_b_ok || out.gate.nvidia_ok) && problems.length === 0;
 
 mkdirSync("spike/out", { recursive: true });
 writeFileSync("spike/out/preflight-providers.json", JSON.stringify(out, null, 2));
 if (process.env.GITHUB_OUTPUT) {
-  appendFileSync(process.env.GITHUB_OUTPUT, `openrouter_ok=${orOk}\nnvidia_ok=${nvOk}\nnvidia_arm=${nvArm}\n`);
+  appendFileSync(process.env.GITHUB_OUTPUT, `or_a_ok=${out.gate.or_a_ok}\nor_b_ok=${out.gate.or_b_ok}\nnvidia_ok=${out.gate.nvidia_ok}\nnvidia_model=${nvModel}\n`);
 }
 
 console.log(`Prompt bytes: ${out.prompt_bytes}`);
-for (const r of out.openrouter.full_prompt ?? []) console.log(`  openrouter full-prompt ${r.model}: status=${r.status} accepted=${r.accepted} prompt_tokens=${r.prompt_tokens} finish=${r.finish_reason} empty=${r.content_empty} err=${r.error_body ?? ""}`.slice(0, 600));
-if (out.nvidia.full_prompt) {
-  const f = out.nvidia.full_prompt;
-  console.log(`  nvidia full-prompt ${f.model}: status=${f.status} accepted=${f.accepted} prompt_tokens=${f.prompt_tokens} err=${f.error_body ?? ""}`.slice(0, 600));
-  for (const r of out.nvidia.callable) console.log(`  nvidia probe ${r.model}: status=${r.status} callable=${r.callable} err=${(r.error_body ?? "").slice(0, 160)}`);
-  console.log(`  nvidia burst: ${JSON.stringify(out.nvidia.burst.status_counts)}`);
+for (const r of [...(out.openrouter.full_prompt ?? []), ...(out.nvidia.full_prompt ?? [])]) {
+  console.log(`  ${r.model}: status=${r.status} accepted=${r.accepted} prompt_tokens=${r.prompt_tokens} finish=${r.finish_reason} empty=${r.content_empty} err=${r.error_body ?? ""}`.slice(0, 600));
 }
 console.log(`Gate: ${JSON.stringify(out.gate)}`);
+for (const p of problems) console.error(`::error::${p}`);
 if (!out.gate.pass) {
-  console.error("::error::No provider accepted the full ~16KB builder prompt. Arms must not run — stop and report.");
+  console.error("::error::Preflight failed (no provider accepted the full prompt, or a configured model is near deprecation). Arms must not run — stop and report.");
   process.exit(1);
 }

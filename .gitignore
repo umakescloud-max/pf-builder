@@ -9,3 +9,5 @@ shots/
 cover.png
 test-results/
 playwright-report/
+.pf/
+spike/out/

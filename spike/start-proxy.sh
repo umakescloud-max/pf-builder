@@ -8,7 +8,7 @@
 # attributed to the harness (exit 4), not to the builder.
 set -uo pipefail
 OUT="$1"; mkdir -p "$OUT"
-MODEL="${OPENROUTER_MODEL:?}"
+MODEL="${ARM_A_MODEL:?}"
 case "$MODEL" in *:free) ;; *) echo "refusing non-:free OpenRouter id $MODEL" >&2; exit 3;; esac
 KEY="sk-pf-$(openssl rand -hex 12)"   # throwaway proxy key, never a provider key
 

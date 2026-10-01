@@ -2,6 +2,8 @@
 // Gemini CLI: run with --output-format json, so the log is a JSON object
 // with a token-usage block. Aider: --no-pretty still prints one
 // "Tokens: <n>k? sent, <n>k? received." line per exchange.
+// OpenCode: --format json, one event per line; each step_finish is one model
+// request carrying part.tokens (total, or input+output).
 // Prints "<requests> <peak_tokens>" — "unknown" for either field that
 // couldn't be read. Never prints 0 for a signal that just wasn't found.
 import { readFileSync } from "node:fs";
@@ -54,5 +56,26 @@ function fromAiderText() {
   return { requests, peak_tokens: Math.round(peak) };
 }
 
-const result = (builder === "gemini-cli" ? fromGeminiJson() : fromAiderText()) ?? { requests: "unknown", peak_tokens: "unknown" };
+function fromOpencodeJson() {
+  let requests = 0;
+  let peak = 0;
+  for (const line of raw.split(String.fromCharCode(10))) {
+    if (!line.startsWith("{")) continue;
+    let ev;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (ev.type !== "step_finish") continue;
+    requests++;
+    const t = ev.part?.tokens;
+    if (t) peak = Math.max(peak, t.total ?? (t.input ?? 0) + (t.output ?? 0));
+  }
+  if (requests === 0) return null;
+  return { requests, peak_tokens: peak || "unknown" };
+}
+
+const parse = { "gemini-cli": fromGeminiJson, opencode: fromOpencodeJson }[builder] ?? fromAiderText;
+const result = parse() ?? { requests: "unknown", peak_tokens: "unknown" };
 console.log(`${result.requests} ${result.peak_tokens}`);

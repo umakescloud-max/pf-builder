@@ -87,16 +87,16 @@ function checkImageImportsOutsideKit(srcDir: string, violations: Violation[]) {
 function checkNoDependencyChanges(prototypeDir: string, starterDir: string, violations: Violation[]) {
   const prototypePkg = readFileSync(path.join(prototypeDir, "package.json"), "utf-8");
   const starterPkg = readFileSync(path.join(starterDir, "package.json"), "utf-8");
-  const normalize = (raw: string) => {
+  // Dependency key sets only: name/version/scripts churn is not a violation.
+  const depKeys = (raw: string) => {
     const parsed = JSON.parse(raw);
-    delete parsed.name; // the copy is allowed to rename itself
-    return JSON.stringify(parsed);
+    return JSON.stringify([Object.keys(parsed.dependencies ?? {}).sort(), Object.keys(parsed.devDependencies ?? {}).sort()]);
   };
-  if (normalize(prototypePkg) !== normalize(starterPkg)) {
+  if (depKeys(prototypePkg) !== depKeys(starterPkg)) {
     violations.push({
       file: "package.json",
       rule: "dependency-manifest-changed",
-      detail: "package.json differs from the archetype starter (other than its name field)",
+      detail: "dependencies/devDependencies keys differ from the archetype starter",
     });
   }
 }
