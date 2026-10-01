@@ -10,14 +10,20 @@
 // is no burst test: a 20-request burst cannot measure a sequential agentic
 // workload, and its 429s only ever prevented data collection.
 //
-// Env: ARM_A_MODEL, ARM_B_MODEL (OpenRouter :free ids), NVIDIA_MODEL,
-// NVIDIA_FALLBACK_MODEL (explicitly configured, not a first-listed fallback).
-// Hard gate: exit 1 if no model accepts the prompt, or a configured model is
-// near deprecation. Job outputs: or_a_ok, or_b_ok, nvidia_ok, nvidia_model.
+// Env: PAID_MODEL (allowlisted paid OpenRouter id), ARM_A_MODEL, ARM_B_MODEL (OpenRouter :free
+// ids), NVIDIA_MODEL, NVIDIA_FALLBACK_MODEL (explicitly configured, not a first-listed fallback).
+// INCLUDE_PAID_ARM / INCLUDE_ARM_A / INCLUDE_ARM_B / INCLUDE_ARM_C = "true" select which arms are
+// probed; an arm that is off is never called.
+// Hard gate: exit 1 if no model accepts the prompt, a configured model is near deprecation, or a
+// paid arm is on and OpenRouter /key usage (the spend baseline) cannot be read.
+// Job outputs: or_p_ok, or_a_ok, or_b_ok, or_usage_start, nvidia_ok, nvidia_model.
 import { readFileSync, writeFileSync, mkdirSync, appendFileSync } from "node:fs";
+import { isAllowed, isFree } from "./allowed-model.mjs";
 
-const OR_BASE = "https://openrouter.ai/api/v1";
+const OR_BASE = process.env.PF_OPENROUTER_BASE ?? "https://openrouter.ai/api/v1"; // override is for the local smoke only
 const NV_BASE = "https://integrate.api.nvidia.com/v1";
+const P_MODEL = process.env.PAID_MODEL || "anthropic/claude-haiku-4.5";
+const on = (n) => process.env[n] === "true";
 const A_MODEL = process.env.ARM_A_MODEL || "cohere/north-mini-code:free";
 const B_MODEL = process.env.ARM_B_MODEL || "poolside/laguna-s-2.1:free";
 const NV_MODEL = process.env.NVIDIA_MODEL || "nvidia/nemotron-3-ultra-550b-a55b";
@@ -37,8 +43,8 @@ const allHeaders = (h) => Object.fromEntries([...h.entries()].filter(([k]) => k.
 const problems = []; // loud failures, collected so the JSON artifact is still written
 
 async function chat(base, key, model, content, max_tokens) {
-  // Every OpenRouter call must name an explicit :free id; one paid call already slipped through a fallback.
-  if (base === OR_BASE && !model.endsWith(":free")) throw new Error(`refusing non-:free OpenRouter id ${model}`);
+  // Every OpenRouter call must name an allowlisted id; one paid call already slipped through a fallback.
+  if (base === OR_BASE && !isAllowed(model)) throw new Error(`refusing non-allowlisted OpenRouter id ${model}`);
   const start = Date.now();
   try {
     const res = await fetch(`${base}/chat/completions`, {
@@ -122,18 +128,29 @@ const out = { prompt_bytes: Buffer.byteLength(prompt), openrouter: {}, nvidia: {
 // ---- OpenRouter: arms A and B ----
 const orKey = process.env.OPENROUTER_API_KEY;
 const orOk = {};
-if (process.env.SKIP_OPENROUTER === "true") {
-  out.openrouter.skipped = "arms A and B are off";
+const orArms = [["p", P_MODEL, on("INCLUDE_PAID_ARM")], ["a", A_MODEL, on("INCLUDE_ARM_A")], ["b", B_MODEL, on("INCLUDE_ARM_B")]].filter(([, , included]) => included);
+let usageStart = "";
+if (orArms.length === 0) {
+  out.openrouter.skipped = "no OpenRouter arm is on";
 } else if (!orKey) {
   out.openrouter.error = "OPENROUTER_API_KEY not set";
 } else {
   out.openrouter.key_before = await orKeyInfo(orKey);
+  const usage = out.openrouter.key_before.key?.body?.data?.usage;
+  if (typeof usage === "number") usageStart = String(usage);
+  else if (orArms.some(([, m]) => !isFree(m))) problems.push("OpenRouter /key usage unreadable: the spend ceiling cannot be enforced, so the paid arm must not run");
   const live = await liveModels(OR_BASE, orKey);
   out.openrouter.full_prompt = [];
-  for (const [arm, model] of [["a", A_MODEL], ["b", B_MODEL]]) {
+  for (const [arm, model] of orArms.map(([a, m]) => [a, m])) {
+    if (!isAllowed(model)) {
+      out.openrouter.full_prompt.push({ model, ok: false, accepted: false, error_body: "not allowlisted (config error) - never called" });
+      problems.push(`OpenRouter model ${model} is not allowlisted (config error)`);
+      orOk[arm] = false;
+      continue;
+    }
     const meta = live?.find((m) => m.id === model);
     if (!live || !meta) {
-      out.openrouter.full_prompt.push({ model, ok: false, accepted: false, error_body: live ? "requested :free id not in live /models — fails, no substitution" : "could not read /models" });
+      out.openrouter.full_prompt.push({ model, ok: false, accepted: false, error_body: live ? "requested id not in live /models — fails, no substitution" : "could not read /models" });
       orOk[arm] = false;
       continue;
     }
@@ -147,6 +164,7 @@ if (process.env.SKIP_OPENROUTER === "true") {
     r.accepted = accepted(r);
     r.context_length = meta.context_length ?? null;
     r.pricing = meta.pricing ?? null;
+    if (!isFree(model) && Number(meta.pricing?.prompt) === 0) problems.push(`${model}: expected a paid model but /models lists it at zero prompt price`);
     r.expiration_date = meta.expiration_date ?? null;
     deprecation("OpenRouter", r);
     out.openrouter.full_prompt.push(r);
@@ -158,7 +176,9 @@ if (process.env.SKIP_OPENROUTER === "true") {
 // ---- NVIDIA: arm C. Configured model first, then the configured fallback. ----
 const nvKey = process.env.NVIDIA_API_KEY;
 let nvModel = "";
-if (!nvKey) {
+if (!on("INCLUDE_ARM_C")) {
+  out.nvidia.skipped = "arm C is off";
+} else if (!nvKey) {
   out.nvidia.error = "NVIDIA_API_KEY not set";
 } else {
   const live = await liveModels(NV_BASE, nvKey);
@@ -177,13 +197,13 @@ if (!nvKey) {
   out.nvidia.chosen_model = nvModel || null;
 }
 
-out.gate = { or_a_ok: orOk.a === true, or_b_ok: orOk.b === true, nvidia_ok: nvModel !== "", nvidia_model: nvModel, problems };
-out.gate.pass = (out.gate.or_a_ok || out.gate.or_b_ok || out.gate.nvidia_ok) && problems.length === 0;
+out.gate = { or_p_ok: orOk.p === true, or_usage_start: usageStart, or_a_ok: orOk.a === true, or_b_ok: orOk.b === true, nvidia_ok: nvModel !== "", nvidia_model: nvModel, problems };
+out.gate.pass = (out.gate.or_p_ok || out.gate.or_a_ok || out.gate.or_b_ok || out.gate.nvidia_ok) && problems.length === 0;
 
 mkdirSync("spike/out", { recursive: true });
 writeFileSync("spike/out/preflight-providers.json", JSON.stringify(out, null, 2));
 if (process.env.GITHUB_OUTPUT) {
-  appendFileSync(process.env.GITHUB_OUTPUT, `or_a_ok=${out.gate.or_a_ok}\nor_b_ok=${out.gate.or_b_ok}\nnvidia_ok=${out.gate.nvidia_ok}\nnvidia_model=${nvModel}\n`);
+  appendFileSync(process.env.GITHUB_OUTPUT, `or_p_ok=${out.gate.or_p_ok}\nor_usage_start=${usageStart}\nor_a_ok=${out.gate.or_a_ok}\nor_b_ok=${out.gate.or_b_ok}\nnvidia_ok=${out.gate.nvidia_ok}\nnvidia_model=${nvModel}\n`);
 }
 
 console.log(`Prompt bytes: ${out.prompt_bytes}`);

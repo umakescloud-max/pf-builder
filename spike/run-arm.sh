@@ -43,9 +43,15 @@ provider_error=""
 rate_limited=""
 builder_outcome=""   # opencode supervisor verdict, or builder_timeout on exit 124
 builder_detail=""
+# Paid OpenRouter ids are metered against OpenRouter /key (spend.mjs): before and after every attempt,
+# and after every step inside the supervisor. PF_SPEND_START is the key's usage when the dispatch began.
+metered=false
+arm_usage_start=""
+last_usage=""
 
 log() { echo "[$ARM] $*"; }
 json_str() { node -e 'process.stdout.write(JSON.stringify(require("fs").readFileSync(0,"utf8").trim()))'; }
+usd_delta() { [ -n "$1" ] && [ -n "$2" ] && node -e 'console.log(Math.round((+process.argv[1] - +process.argv[2]) * 1e6) / 1e6)' "$1" "$2" || echo null; }
 json_num_or_unknown() { [ "$1" = "unknown" ] && echo '"unknown"' || echo "$1"; }
 
 reset_prototype() {
@@ -183,6 +189,8 @@ write_result() {
   "requests_issued": $(json_num_or_unknown "$requests"),
   "peak_tokens_per_request": $(json_num_or_unknown "$peak_tokens"),
   "quota_exhausted": $quota_exhausted,
+  "spend_usd": $(usd_delta "$last_usage" "$arm_usage_start"),
+  "dispatch_spend_usd": $(usd_delta "$last_usage" "${PF_SPEND_START:-}"),
   "node_version": "$(node -v)",
   "builder_version": $(builder_version | json_str),
   "groq_reject_reason": $( [ -n "$groq_reject" ] && printf '%s' "$groq_reject" | json_str || echo null ),
@@ -190,6 +198,23 @@ write_result() {
 }
 JSON
   log "result: $status ($gate)"
+}
+
+# Aborts the arm (result written, exit 0) at the spend ceiling, or when usage cannot be read (fail closed).
+spend_check() {  # $1 = label, $2 = attempts so far
+  $metered || return 0
+  local out code
+  out="$(node "$ROOT/spike/spend.mjs" 2>"$OUT_DIR/spend-check.err")"; code=$?
+  if [ "$code" -eq 0 ] || [ "$code" -eq 7 ]; then
+    last_usage="$(node -e 'console.log(JSON.parse(process.argv[1]).usage)' "$out")"
+    [ -n "$arm_usage_start" ] || arm_usage_start="$last_usage"
+    log "spend ($1): $out"
+  fi
+  case "$code" in
+    0) ;;
+    7) write_result "spend_ceiling" "none" "$2" "Spend ceiling reached ($1): $out"; exit 0;;
+    *) write_result "spend_check_failed" "none" "$2" "Cannot meter spend ($1): $(tr '\n' ' ' <"$OUT_DIR/spend-check.err" 2>/dev/null)"; exit 0;;
+  esac
 }
 
 run_gates() {
@@ -217,7 +242,11 @@ run_gates() {
 main() {
   log "node $(node -v); builder $BUILDER $(builder_version); model $MODEL"
   # Config guards happen at the call site: a bad id aborts the arm, never reaches a provider.
-  case "$MODEL" in openrouter/*) case "$MODEL" in *:free) ;; *) write_result "config_error" "none" 0 "refusing non-:free OpenRouter model $MODEL"; exit 0;; esac;; esac
+  # Allowlist lives in allowed-model.mjs: the paid builder plus any id ending :free.
+  case "$MODEL" in openrouter/*)
+    node "$ROOT/spike/allowed-model.mjs" "$MODEL" 2>"$OUT_DIR/allowlist.err" || { write_result "config_error" "none" 0 "refusing non-allowlisted OpenRouter model $MODEL: $(cat "$OUT_DIR/allowlist.err")"; exit 0; }
+    case "$MODEL" in *:free) ;; *) metered=true;; esac;;
+  esac
   if [ "$BUILDER" = "opencode" ]; then
     case "$MODEL" in *[gG]emini*|google/*) write_result "config_error" "none" 0 "OpenCode must never run against Gemini ($MODEL)"; exit 0;; esac
   fi
@@ -226,8 +255,10 @@ main() {
   local attempt=1 fix_block=""
 
   while [ "$attempt" -le 2 ]; do
+    spend_check "before attempt $attempt" "$((attempt - 1))"
     log "attempt $attempt: running $BUILDER ($MODEL)"
     run_builder "$attempt" "$fix_block"
+    spend_check "after attempt $attempt" "$attempt"
 
     if [ "$quota_exhausted" = true ]; then
       write_result "quota_exhausted" "none" "$attempt" "Provider daily quota exhausted — stop and resume next day, do not cut this run short. $builder_detail"
@@ -242,7 +273,7 @@ main() {
     # Supervisor / timeout verdicts. None of these are retried: a retry would
     # spend another request budget against the same stall (or same provider error).
     case "$builder_outcome" in
-      builder_timeout|builder_hung|builder_request_cap|provider_error|provider_rate_limited|config_error)
+      builder_timeout|builder_hung|builder_request_cap|provider_error|provider_rate_limited|spend_ceiling|config_error)
         write_result "$builder_outcome" "none" "$attempt" "$builder_detail"
         exit 0;;
     esac

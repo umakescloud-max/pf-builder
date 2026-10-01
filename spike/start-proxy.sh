@@ -9,7 +9,7 @@
 set -uo pipefail
 OUT="$1"; mkdir -p "$OUT"
 MODEL="${ARM_A_MODEL:?}"
-case "$MODEL" in *:free) ;; *) echo "refusing non-:free OpenRouter id $MODEL" >&2; exit 3;; esac
+node "$(dirname "$0")/allowed-model.mjs" "$MODEL" || exit 3   # allowlist: paid builder or :free only
 KEY="sk-pf-$(openssl rand -hex 12)"   # throwaway proxy key, never a provider key
 
 cat >"$OUT/proxy-config.yaml" <<YAML

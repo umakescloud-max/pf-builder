@@ -3,6 +3,14 @@ name: Phase 2 builder spike
 on:
   workflow_dispatch:
     inputs:
+      paid_model:
+        description: "Arm P (OpenCode x OpenRouter, PRIMARY paid builder). Must be on the allowlist in spike/allowed-model.mjs; anything else aborts as a config error."
+        type: string
+        default: "anthropic/claude-haiku-4.5"
+      include_paid_arm:
+        description: "Arm P on/off. Spend is capped at PF_SPEND_CEILING (2.00 USD) per dispatch."
+        type: boolean
+        default: true
       arm_a_model:
         description: "Arm A (OpenCode x OpenRouter, primary) — explicit :free id; the run refuses anything else and never substitutes."
         type: string
@@ -19,6 +27,10 @@ on:
         description: "Arm C fallback, used only if nvidia_model is unlisted or rejects the full prompt in preflight."
         type: string
         default: "moonshotai/kimi-k3"
+      include_arm_c:
+        description: "Deferred: Arm C (OpenCode x NVIDIA kimi-k3). Free-tier builder selection is deferred to after Phase 2 closes; kimi-k3 unresolved."
+        type: boolean
+        default: false
       include_arm_a:
         description: "Retired: Arm A (OpenCode x north-mini-code:free) - 25 reads, 0 writes in dispatch 1 (builder verdict). Quota freed."
         type: boolean
@@ -51,6 +63,9 @@ env:
   PYTHON_VERSION: "3.12"
   OPENCODE_VERSION: "1.18.31"
   AIDER_VERSION: "0.86.2"
+  PAID_MODEL: ${{ inputs.paid_model }}
+  # Hard spend ceiling for the whole dispatch, USD, checked against OpenRouter /key (spike/spend.mjs). Not an input on purpose.
+  PF_SPEND_CEILING: "2.00"
   ARM_A_MODEL: ${{ inputs.arm_a_model }}
   ARM_B_MODEL: ${{ inputs.arm_b_model }}
   NVIDIA_MODEL: ${{ inputs.nvidia_model }}
@@ -60,11 +75,16 @@ jobs:
   preflight:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Check required secrets are present
         run: |
           missing=""
-          [ -z "${{ secrets.OPENROUTER_API_KEY }}" ] && missing="$missing OPENROUTER_API_KEY"
-          [ -z "${{ secrets.NVIDIA_API_KEY }}" ] && missing="$missing NVIDIA_API_KEY"
+          if [ "${{ inputs.include_paid_arm || inputs.include_arm_a || inputs.include_arm_b }}" = "true" ] && [ -z "${{ secrets.OPENROUTER_API_KEY }}" ]; then
+            missing="$missing OPENROUTER_API_KEY"
+          fi
+          if [ "${{ inputs.include_arm_c }}" = "true" ] && [ -z "${{ secrets.NVIDIA_API_KEY }}" ]; then
+            missing="$missing NVIDIA_API_KEY"
+          fi
           if [ "${{ inputs.include_gemini_cli_arm || inputs.include_gemini_control }}" = "true" ] && [ -z "${{ secrets.GEMINI_API_KEY }}" ]; then
             missing="$missing GEMINI_API_KEY"
           fi
@@ -72,12 +92,11 @@ jobs:
             echo "::error::Missing required secret(s):$missing"
             exit 1
           fi
-          for m in "${{ inputs.arm_a_model }}" "${{ inputs.arm_b_model }}"; do
-            case "$m" in
-              *:free) ;;
-              *) echo "::error::OpenRouter model '$m' must be an explicit :free id (config error)"; exit 1;;
-            esac
-          done
+          # Allowlist (spike/allowed-model.mjs): the paid builder plus any :free id. Only models whose arm is on are checked.
+          [ "${{ inputs.include_paid_arm }}" = "true" ] && { node spike/allowed-model.mjs "${{ inputs.paid_model }}" || exit 1; }
+          [ "${{ inputs.include_arm_a }}" = "true" ] && { node spike/allowed-model.mjs "${{ inputs.arm_a_model }}" || exit 1; }
+          [ "${{ inputs.include_arm_b }}" = "true" ] && { node spike/allowed-model.mjs "${{ inputs.arm_b_model }}" || exit 1; }
+          exit 0
 
   # Hard gate: fails (skipping every arm) unless some model accepts the full
   # ~16KB builder prompt, or if a configured model is within 14 days of deprecation.
@@ -85,6 +104,8 @@ jobs:
     needs: preflight
     runs-on: ubuntu-latest
     outputs:
+      or_p_ok: ${{ steps.pf.outputs.or_p_ok }}
+      or_usage_start: ${{ steps.pf.outputs.or_usage_start }}
       or_a_ok: ${{ steps.pf.outputs.or_a_ok }}
       or_b_ok: ${{ steps.pf.outputs.or_b_ok }}
       nvidia_ok: ${{ steps.pf.outputs.nvidia_ok }}
@@ -98,7 +119,10 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          SKIP_OPENROUTER: ${{ !inputs.include_arm_a && !inputs.include_arm_b }}
+          INCLUDE_PAID_ARM: ${{ inputs.include_paid_arm }}
+          INCLUDE_ARM_A: ${{ inputs.include_arm_a }}
+          INCLUDE_ARM_B: ${{ inputs.include_arm_b }}
+          INCLUDE_ARM_C: ${{ inputs.include_arm_c }}
         run: node spike/preflight-providers.mjs
       - uses: actions/upload-artifact@v4
         if: always()
@@ -107,9 +131,36 @@ jobs:
           path: spike/out/preflight-providers.json
           if-no-files-found: ignore
 
-  arm-a-opencode-openrouter:
+  # Arm P: the paid primary builder. Metered against OpenRouter /key: spike/spend.mjs before and after each
+  # attempt, and the supervisor after every step; aborts the arm at PF_SPEND_CEILING.
+  arm-p-opencode-openrouter-paid:
     needs: provider-preflight
-    if: inputs.include_arm_a && needs.provider-preflight.outputs.or_a_ok == 'true'
+    if: inputs.include_paid_arm && needs.provider-preflight.outputs.or_p_ok == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm install -g opencode-ai@${{ env.OPENCODE_VERSION }}
+      - env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PF_SPEND_START: ${{ needs.provider-preflight.outputs.or_usage_start }}
+        run: |
+          chmod +x spike/run-arm.sh
+          ./spike/run-arm.sh opencode-openrouter-paid opencode "openrouter/$PAID_MODEL" || [ $? -eq 2 ]
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-arm-p-opencode-openrouter-paid
+          path: spike/out/opencode-openrouter-paid
+          if-no-files-found: ignore
+
+  arm-a-opencode-openrouter:
+    needs: [provider-preflight, arm-p-opencode-openrouter-paid]
+    if: always() && inputs.include_arm_a && needs.provider-preflight.outputs.or_a_ok == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -173,7 +224,7 @@ jobs:
   arm-c-opencode-nvidia:
     needs: [provider-preflight, arm-b-aider-openrouter]
     # No burst-429 skip rule: calls are paced 1/4s by the supervisor, which aborts on 3 consecutive 429s.
-    if: always() && needs.provider-preflight.outputs.nvidia_ok == 'true'
+    if: always() && inputs.include_arm_c && needs.provider-preflight.outputs.nvidia_ok == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -261,7 +312,7 @@ jobs:
           if-no-files-found: ignore
 
   report:
-    needs: [provider-preflight, arm-a-opencode-openrouter, arm-b-aider-openrouter, arm-c-opencode-nvidia, arm-d-gemini-cli-openrouter, arm-e-aider-gemini]
+    needs: [provider-preflight, arm-p-opencode-openrouter-paid, arm-a-opencode-openrouter, arm-b-aider-openrouter, arm-c-opencode-nvidia, arm-d-gemini-cli-openrouter, arm-e-aider-gemini]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -279,6 +330,10 @@ jobs:
           merge-multiple: true
       - name: Build results table and pick a winner
         env:
+          PAID_MODEL: ${{ inputs.paid_model }}
+          INCLUDE_PAID_ARM: ${{ inputs.include_paid_arm }}
+          INCLUDE_ARM_C: ${{ inputs.include_arm_c }}
+          OR_P_OK: ${{ needs.provider-preflight.outputs.or_p_ok }}
           ARM_A_MODEL: ${{ inputs.arm_a_model }}
           ARM_B_MODEL: ${{ inputs.arm_b_model }}
           NVIDIA_MODEL: ${{ inputs.nvidia_model }}

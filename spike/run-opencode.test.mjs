@@ -124,7 +124,45 @@ test("empty step twice: exactly one retry, then empty_step_after_retry with both
   assert.equal(r.outcome, "empty_step_after_retry");
   assert.equal(r.proxy_requests, 2);
 });
+// dispatch 5: 32 reasoning tokens, no content, no tool call, finish stop. Must count as empty.
+const REASONING_ONLY = sse({ choices: [{ delta: { role: "assistant", reasoning_content: "hmm" }, finish_reason: null }] }, { choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10944, completion_tokens: 32, completion_tokens_details: { reasoning_tokens: 32 }, total_tokens: 10976 } });
+const REASONING_ONLY_JSON = JSON.stringify({ choices: [{ message: { role: "assistant", content: "", reasoning_content: "hmm" }, finish_reason: "stop" }], usage: { completion_tokens: 32 } });
+test("reasoning>0, content=0, no tool call: empty, raw-logged, retried once (SSE and JSON bodies)", async () => {
+  for (const body of [REASONING_ONLY, REASONING_ONLY_JSON]) {
+    const { r, hits, raw } = await runEmpty([body, TOOL]);
+    assert.equal(hits, 2);
+    assert.equal(raw.length, 1);
+    assert.deepEqual([raw[0].finish_reason, raw[0].usage.completion_tokens, raw[0].reasoning_seen, raw[0].is_retry], ["stop", 32, true, false]);
+    assert.deepEqual([r.empty_steps, r.empty_recovered], [1, 1]);
+  }
+  const twice = await runEmpty([REASONING_ONLY]);
+  assert.equal(twice.hits, 2);
+  assert.equal(twice.r.outcome, "empty_step_after_retry");
+  assert.equal(twice.raw.length, 2);
+});
 test("a non-empty response and an error body are never treated as empty", async () => {
   assert.equal((await runEmpty([TOOL])).hits, 1);
   assert.equal((await runEmpty([sse({ error: { message: "boom" } })])).hits, 1);
+});
+
+// ---- paid model: allowlist + spend ceiling ----
+const HAIKU = "openrouter/anthropic/claude-haiku-4.5";
+test("paid allowlisted model without a spend baseline is a config_error (never runs unmetered)", () => {
+  const r = run(HAIKU, "complete", { OPENROUTER_API_KEY: "", PF_SPEND_START: "" });
+  assert.equal(r.outcome, "config_error");
+  assert.match(r.detail, /cannot be metered/);
+});
+test("spend ceiling: /key usage - start >= ceiling aborts mid-attempt as spend_ceiling", async () => {
+  let usage = 10;
+  const or = createServer((req, res) => { usage += 0.6; res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { usage } })); });
+  await new Promise((r) => or.listen(0, "127.0.0.1", r));
+  const result = path.join(dir, "r-spend.json");
+  const child = spawn(process.execPath, [path.resolve("spike/run-opencode.mjs"), "--model", HAIKU, "--prompt-file", path.join(dir, "prompt.txt"), "--log", path.join(dir, "s.log"), "--result", result], {
+    env: { ...process.env, OPENCODE_BIN: process.execPath, OPENCODE_BIN_ARGS: JSON.stringify([stub]), STUB_MODE: "loop", PF_REQ_CAP: "50", PF_SILENCE_MS: "60000", OPENROUTER_API_KEY: "k", PF_SPEND_START: "10", PF_SPEND_CEILING: "2", PF_OPENROUTER_BASE: `http://127.0.0.1:${or.address().port}` },
+  });
+  await new Promise((r) => child.on("close", r));
+  or.close();
+  const r = JSON.parse(readFileSync(result, "utf-8"));
+  assert.equal(r.outcome, "spend_ceiling");
+  assert.match(r.detail, /ceiling 2/);
 });
