@@ -9,10 +9,32 @@ import path from "node:path";
 const OUT_DIR = "spike/out";
 const ARM_DIRS = ["spike-arm-1-gemini-cli", "spike-arm-2-aider-gemini", "spike-arm-3-aider-groq"];
 
+// Why a missing result.json is missing, per arm — never guessed, only from
+// facts the workflow actually knows. include_arm_3=false is the common
+// case for arm 3 and must say so, not "quota_exhausted" (run 2's report
+// invented that cause for an arm that was simply excluded by input).
+const INCLUDE_ARM_3 = process.env.INCLUDE_ARM_3 === "true";
+const ARM1_QUOTA_EXHAUSTED = process.env.ARM1_QUOTA_EXHAUSTED === "true";
+const ARM2_QUOTA_EXHAUSTED = process.env.ARM2_QUOTA_EXHAUSTED === "true";
+
+function missingReason(dir) {
+  if (dir === "spike-arm-3-aider-groq" && !INCLUDE_ARM_3) {
+    return { status: "excluded_by_input", detail: "Arm 3 skipped: include_arm_3 was unchecked on this dispatch." };
+  }
+  if (dir === "spike-arm-2-aider-gemini" && ARM1_QUOTA_EXHAUSTED) {
+    return { status: "upstream_quota_exhausted", detail: "Arm 2 skipped: arm 1 reported Gemini quota_exhausted." };
+  }
+  if (dir === "spike-arm-3-aider-groq" && ARM2_QUOTA_EXHAUSTED) {
+    return { status: "upstream_quota_exhausted", detail: "Arm 3 skipped: arm 2 reported Gemini quota_exhausted." };
+  }
+  return { status: "did_not_run", detail: "No result.json and no known cause — check the job's own logs." };
+}
+
 const results = ARM_DIRS.map((dir) => {
   const resultPath = path.join(OUT_DIR, dir, "result.json");
   if (!existsSync(resultPath)) {
-    return { arm: dir, status: "did_not_run", failing_gate: "n/a", attempts: 0, requests_issued: 0, peak_tokens_per_request: 0, detail: "No result.json — job skipped (likely upstream quota_exhausted)." };
+    const { status, detail } = missingReason(dir);
+    return { arm: dir, status, failing_gate: "n/a", attempts: 0, requests_issued: "unknown", peak_tokens_per_request: "unknown", detail };
   }
   return JSON.parse(readFileSync(resultPath, "utf-8"));
 });

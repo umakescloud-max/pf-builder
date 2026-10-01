@@ -35,27 +35,59 @@ async function checkGemini() {
   );
   const body = await res.json().catch(() => ({}));
   const text = body?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-  return { ok: res.ok && text.length > 0, status: res.status, model: "gemini-flash-latest", rate_limit_headers: pickHeaders(res.headers), content_preview: text.slice(0, 40) };
+  return {
+    ok: res.ok && text.length > 0,
+    status: res.status,
+    model: "gemini-flash-latest",
+    rate_limit_headers: pickHeaders(res.headers),
+    content_preview: text.slice(0, 40),
+    // Full body on failure: run 2's 403 was never diagnosable from the
+    // truncated log line alone, despite arm 2 proving the same key works.
+    error: res.ok && text.length > 0 ? undefined : JSON.stringify(body).slice(0, 500),
+  };
 }
 
-async function checkOpenAICompat(name, baseUrl, keyEnv, model) {
+// GET /v1/models and pick a live id: prefer the requested one if the
+// provider actually lists it, otherwise fall back to whatever it returns
+// (model ids drift — NVIDIA 410s and OpenRouter 404s in run 2 were both
+// stale hardcoded ids, not provider outages).
+async function pickLiveModel(baseUrl, key, requested) {
+  try {
+    const res = await fetch(`${baseUrl}/models`, { headers: { Authorization: `Bearer ${key}` } });
+    if (!res.ok) return { model: requested, live_ids: null };
+    const body = await res.json().catch(() => ({}));
+    const ids = (body?.data ?? []).map((m) => m.id).filter(Boolean);
+    return { model: ids.includes(requested) ? requested : ids[0] ?? requested, live_ids: ids };
+  } catch {
+    return { model: requested, live_ids: null };
+  }
+}
+
+async function checkOpenAICompat(name, baseUrl, keyEnv, requestedModel) {
   const key = process.env[keyEnv];
   if (!key) return { ok: false, error: `${keyEnv} not set` };
+  const { model, live_ids } = await pickLiveModel(baseUrl, key, requestedModel);
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply with exactly: OK" }], max_tokens: 10 }),
+    // max_tokens is generous: reasoning models (e.g. Groq's gpt-oss) spend
+    // part of the budget on hidden reasoning tokens before emitting content
+    // — 10 was clipping content to empty on an otherwise-200 response.
+    body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply with exactly: OK" }], max_tokens: 60 }),
   });
   const body = await res.json().catch(() => ({}));
-  const text = body?.choices?.[0]?.message?.content ?? "";
+  const choice = body?.choices?.[0];
+  const text = choice?.message?.content ?? choice?.text ?? "";
   const echoedModel = body?.model ?? null;
   return {
     ok: res.ok && text.length > 0,
     status: res.status,
     model: echoedModel ?? model,
+    requested_model: requestedModel,
+    live_ids,
     rate_limit_headers: pickHeaders(res.headers),
     content_preview: text.slice(0, 40),
-    error: res.ok ? undefined : JSON.stringify(body).slice(0, 300),
+    error: res.ok && text.length > 0 ? undefined : JSON.stringify(body).slice(0, 300),
   };
 }
 
@@ -68,7 +100,8 @@ const results = {
 
 console.log("Provider preflight results (no key values logged):");
 for (const [name, r] of Object.entries(results)) {
-  console.log(`  ${name}: ok=${r.ok} status=${r.status ?? "n/a"} latency_ms=${r.latency_ms} model=${r.model ?? "n/a"} rate_limit_headers=${JSON.stringify(r.rate_limit_headers ?? {})}${r.error ? ` error=${r.error}` : ""}`);
+  const modelNote = r.requested_model && r.requested_model !== r.model ? ` (requested=${r.requested_model})` : "";
+  console.log(`  ${name}: ok=${r.ok} status=${r.status ?? "n/a"} latency_ms=${r.latency_ms} model=${r.model ?? "n/a"}${modelNote} rate_limit_headers=${JSON.stringify(r.rate_limit_headers ?? {})}${r.error ? ` error=${r.error}` : ""}`);
 }
 
 import { writeFileSync, mkdirSync } from "node:fs";

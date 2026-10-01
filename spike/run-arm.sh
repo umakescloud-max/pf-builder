@@ -24,8 +24,8 @@ mkdir -p "$OUT_DIR"
 
 RESULT="$OUT_DIR/result.json"
 
-requests=0
-peak_tokens=0
+requests="unknown"
+peak_tokens="unknown"
 quota_exhausted=false
 groq_reject=""
 
@@ -46,18 +46,27 @@ reset_prototype() {
     pkg.name = '$PROTO_NAME';
     fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
   "
+  # Pre-install the archetype's own deps into the workspace so the builder
+  # never has a reason to touch package.json itself (run 2's arm 2 flagged
+  # touched_forbidden on it for exactly this).
+  (cd "$ROOT" && npm install --no-audit --no-fund >/dev/null 2>&1) || true
 }
 
 # Scans a log for best-effort request/token signals and known Groq/Gemini
 # rejection patterns. Updates the shared counters above.
 scan_log() {
   local log_file="$1"
-  local n
-  n=$(grep -ocE 'Tokens:|tokens? (sent|received|used)' "$log_file" 2>/dev/null || echo 0)
-  [ "$n" -gt "$requests" ] && requests=$n
-  local tok
-  tok=$(grep -oP '[0-9]+(?=[kK]? tokens)' "$log_file" 2>/dev/null | sort -n | tail -1)
-  [ -n "$tok" ] && [ "$tok" -gt "$peak_tokens" ] 2>/dev/null && peak_tokens=$tok
+  local parsed
+  parsed=$(node "$ROOT/spike/scan-usage.mjs" "$log_file" "$BUILDER" 2>/dev/null)
+  local n tok
+  n=$(echo "$parsed" | cut -d' ' -f1)
+  tok=$(echo "$parsed" | cut -d' ' -f2)
+  if [ "$n" != "unknown" ] && { [ "$requests" = "unknown" ] || [ "$n" -gt "$requests" ]; }; then
+    requests=$n
+  fi
+  if [ "$tok" != "unknown" ] && { [ "$peak_tokens" = "unknown" ] || [ "$tok" -gt "$peak_tokens" ] 2>/dev/null; }; then
+    peak_tokens=$tok
+  fi
   if grep -qiE 'RESOURCE_EXHAUSTED|429|quota exceeded|rate.?limit exceeded' "$log_file"; then
     quota_exhausted=true
   fi
@@ -77,7 +86,7 @@ run_builder() {
 
   pushd "$PROTO_DIR" >/dev/null
   if [ "$BUILDER" = "gemini-cli" ]; then
-    gemini -p "$prompt_text" --yolo >"$log_file" 2>&1
+    gemini -p "$prompt_text" --yolo --output-format json >"$log_file" 2>&1
   else
     echo "$prompt_text" >"$OUT_DIR/attempt-$attempt-prompt.txt"
     aider --message-file "$OUT_DIR/attempt-$attempt-prompt.txt" \
@@ -94,6 +103,10 @@ check_allowlist() {
   node "$ROOT/spike/check-allowlist.mjs" "$STARTER_DIR" "$PROTO_DIR"
 }
 
+json_num_or_unknown() {
+  [ "$1" = "unknown" ] && echo '"unknown"' || echo "$1"
+}
+
 write_result() {
   local status="$1" gate="$2" attempts="$3" detail="$4"
   cat >"$RESULT" <<JSON
@@ -104,8 +117,8 @@ write_result() {
   "status": "$status",
   "failing_gate": "$gate",
   "attempts": $attempts,
-  "requests_issued": $requests,
-  "peak_tokens_per_request": $peak_tokens,
+  "requests_issued": $(json_num_or_unknown "$requests"),
+  "peak_tokens_per_request": $(json_num_or_unknown "$peak_tokens"),
   "quota_exhausted": $quota_exhausted,
   "groq_reject_reason": $( [ -n "$groq_reject" ] && printf '%s' "$groq_reject" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read().strip()))' || echo null ),
   "detail": $(printf '%s' "$detail" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read().strip()))')

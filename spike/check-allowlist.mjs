@@ -23,6 +23,15 @@ function listFiles(dir, base = dir) {
   return out;
 }
 
+// reset_prototype() legitimately renames package.json's "name" field away
+// from the archetype's — that's not a builder edit, so exempt it here the
+// same way check-static.ts's checkNoDependencyChanges does.
+function normalizePkg(raw) {
+  const parsed = JSON.parse(raw);
+  delete parsed.name;
+  return JSON.stringify(parsed);
+}
+
 const starterFiles = listFiles(starterDir);
 const protoFiles = listFiles(protoDir);
 const forbidden = [];
@@ -34,7 +43,10 @@ for (const [rel, full] of protoFiles) {
     continue;
   }
   if (allowed) continue; // allowed to change freely
-  const same = readFileSync(full).equals(readFileSync(starterFiles.get(rel)));
+  const same =
+    rel === "package.json"
+      ? normalizePkg(readFileSync(full, "utf-8")) === normalizePkg(readFileSync(starterFiles.get(rel), "utf-8"))
+      : readFileSync(full).equals(readFileSync(starterFiles.get(rel)));
   if (!same) forbidden.push(rel);
 }
 for (const rel of starterFiles.keys()) {

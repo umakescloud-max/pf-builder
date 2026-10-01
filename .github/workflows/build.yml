@@ -154,6 +154,10 @@ jobs:
           path: spike/out
           merge-multiple: true
       - name: Build results table and pick a winner
+        env:
+          INCLUDE_ARM_3: ${{ inputs.include_arm_3 }}
+          ARM1_QUOTA_EXHAUSTED: ${{ needs.arm-1-gemini-cli.outputs.quota_exhausted }}
+          ARM2_QUOTA_EXHAUSTED: ${{ needs.arm-2-aider-gemini.outputs.quota_exhausted }}
         run: node spike/report.mjs
       - name: Publish results to spike-results branch
         run: |
