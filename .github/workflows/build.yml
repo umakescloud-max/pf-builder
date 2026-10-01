@@ -3,14 +3,19 @@ name: Phase 2 builder spike
 on:
   workflow_dispatch:
     inputs:
-      include_arm_3:
-        description: "Run arm 3 (Aider x Groq openai/gpt-oss-120b)? Already confirmed unusable as a full-build model (8k TPM ceiling) in run 1 — leave unchecked to save Groq quota unless re-testing that specific finding."
+      openrouter_model:
+        description: "OpenRouter builder model — must be an explicit :free id (the run refuses anything else, and never substitutes)."
+        type: string
+        default: "poolside/laguna-s-2.1:free"
+      include_gemini_control:
+        description: "Run arm 4 (Aider x Gemini, control only — 20 req/day, expected to exhaust)?"
         type: boolean
         default: true
 
 permissions:
   contents: write
 
+# Arms are chained with `needs`, so exactly one runs at a time (max-parallel 1).
 concurrency:
   group: build
   cancel-in-progress: false
@@ -18,6 +23,7 @@ concurrency:
 env:
   NODE_VERSION: "20"
   PYTHON_VERSION: "3.12"
+  OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
 
 jobs:
   preflight:
@@ -26,27 +32,35 @@ jobs:
       - name: Check required secrets are present
         run: |
           missing=""
+          [ -z "${{ secrets.OPENROUTER_API_KEY }}" ] && missing="$missing OPENROUTER_API_KEY"
+          [ -z "${{ secrets.NVIDIA_API_KEY }}" ] && missing="$missing NVIDIA_API_KEY"
           [ -z "${{ secrets.GEMINI_API_KEY }}" ] && missing="$missing GEMINI_API_KEY"
-          [ -z "${{ secrets.GROQ_API_KEY }}" ] && missing="$missing GROQ_API_KEY"
           if [ -n "$missing" ]; then
-            echo "::error::Missing required secret(s):$missing — set them in repo Settings > Secrets and variables > Actions before dispatching this workflow."
+            echo "::error::Missing required secret(s):$missing"
             exit 1
           fi
-          echo "Required secrets present."
+          case "${{ inputs.openrouter_model }}" in
+            *:free) ;;
+            *) echo "::error::openrouter_model must be an explicit :free id"; exit 1;;
+          esac
 
+  # Hard gate: fails (and so skips every arm) unless OpenRouter or NVIDIA
+  # accepts the full ~16KB builder prompt.
   provider-preflight:
     needs: preflight
     runs-on: ubuntu-latest
+    outputs:
+      openrouter_ok: ${{ steps.pf.outputs.openrouter_ok }}
+      nvidia_ok: ${{ steps.pf.outputs.nvidia_ok }}
+      nvidia_arm: ${{ steps.pf.outputs.nvidia_arm }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: "${{ env.NODE_VERSION }}" }
-      - name: One minimal completion per provider (Gemini is a hard gate, Groq/NVIDIA/OpenRouter are informational)
+      - id: pf
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: node spike/preflight-providers.mjs
       - uses: actions/upload-artifact@v4
         if: always()
@@ -55,37 +69,11 @@ jobs:
           path: spike/out/preflight-providers.json
           if-no-files-found: ignore
 
-  arm-1-gemini-cli:
+  arm-1-aider-openrouter:
     needs: provider-preflight
+    if: needs.provider-preflight.outputs.openrouter_ok == 'true'
     runs-on: ubuntu-latest
-    outputs:
-      quota_exhausted: ${{ steps.run.outputs.quota_exhausted }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: "${{ env.NODE_VERSION }}" }
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: npm install -g @google/gemini-cli
-      - id: run
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          chmod +x spike/run-arm.sh
-          ./spike/run-arm.sh gemini-cli gemini-cli gemini-flash-latest
-          code=$?
-          if [ "$code" -eq 2 ]; then echo "quota_exhausted=true" >> "$GITHUB_OUTPUT"; else echo "quota_exhausted=false" >> "$GITHUB_OUTPUT"; fi
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: spike-arm-1-gemini-cli
-          path: spike/out/gemini-cli
-          if-no-files-found: ignore
-
-  arm-2-aider-gemini:
-    needs: arm-1-gemini-cli
-    if: always() && needs.arm-1-gemini-cli.outputs.quota_exhausted != 'true'
-    runs-on: ubuntu-latest
+    timeout-minutes: 60
     outputs:
       quota_exhausted: ${{ steps.run.outputs.quota_exhausted }}
     steps:
@@ -99,23 +87,63 @@ jobs:
       - run: pip install aider-chat
       - id: run
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           chmod +x spike/run-arm.sh
-          ./spike/run-arm.sh aider-gemini aider gemini/gemini-flash-latest
-          code=$?
-          if [ "$code" -eq 2 ]; then echo "quota_exhausted=true" >> "$GITHUB_OUTPUT"; else echo "quota_exhausted=false" >> "$GITHUB_OUTPUT"; fi
+          code=0
+          ./spike/run-arm.sh aider-openrouter aider "openrouter/$OPENROUTER_MODEL" || code=$?
+          echo "quota_exhausted=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          [ "$code" -eq 0 ] || [ "$code" -eq 2 ] || exit "$code"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: spike-arm-2-aider-gemini
-          path: spike/out/aider-gemini
+          name: spike-arm-1-aider-openrouter
+          path: spike/out/aider-openrouter
           if-no-files-found: ignore
 
-  arm-3-aider-groq:
-    needs: arm-2-aider-gemini
-    if: always() && inputs.include_arm_3
+  arm-2-gemini-cli-openrouter:
+    needs: [provider-preflight, arm-1-aider-openrouter]
+    # Shares the OpenRouter budget with arm 1: skip if arm 1 hit the daily cap.
+    if: always() && needs.provider-preflight.outputs.openrouter_ok == 'true' && needs.arm-1-aider-openrouter.outputs.quota_exhausted != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      harness_error: ${{ steps.proxy.outcome == 'failure' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PYTHON_VERSION }}" }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm install -g @google/gemini-cli
+      - run: pip install 'litellm[proxy]'
+      # Gemini CLI cannot talk to OpenRouter natively; LiteLLM translates.
+      # Failure here is a HARNESS failure (reported as such), not a builder one.
+      - id: proxy
+        continue-on-error: true
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          chmod +x spike/start-proxy.sh
+          ./spike/start-proxy.sh spike/out/gemini-cli-openrouter
+      - if: steps.proxy.outcome == 'success'
+        run: |
+          chmod +x spike/run-arm.sh
+          ./spike/run-arm.sh gemini-cli-openrouter gemini-cli "openrouter/$OPENROUTER_MODEL" || [ $? -eq 2 ]
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-arm-2-gemini-cli-openrouter
+          path: spike/out/gemini-cli-openrouter
+          if-no-files-found: ignore
+
+  arm-3-aider-nvidia:
+    needs: [provider-preflight, arm-2-gemini-cli-openrouter]
+    if: always() && needs.provider-preflight.outputs.nvidia_arm == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -126,19 +154,46 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: pip install aider-chat
       - env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENAI_API_BASE: https://integrate.api.nvidia.com/v1
+          OPENAI_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: |
           chmod +x spike/run-arm.sh
-          ./spike/run-arm.sh aider-groq aider groq/openai/gpt-oss-120b
+          ./spike/run-arm.sh aider-nvidia aider openai/nvidia/nemotron-3-super-120b-a12b || [ $? -eq 2 ]
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: spike-arm-3-aider-groq
-          path: spike/out/aider-groq
+          name: spike-arm-3-aider-nvidia
+          path: spike/out/aider-nvidia
+          if-no-files-found: ignore
+
+  arm-4-aider-gemini:
+    needs: [provider-preflight, arm-3-aider-nvidia]
+    if: always() && inputs.include_gemini_control
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PYTHON_VERSION }}" }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: pip install aider-chat
+      - env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          chmod +x spike/run-arm.sh
+          ./spike/run-arm.sh aider-gemini aider gemini/gemini-flash-latest || [ $? -eq 2 ]
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-arm-4-aider-gemini
+          path: spike/out/aider-gemini
           if-no-files-found: ignore
 
   report:
-    needs: [provider-preflight, arm-1-gemini-cli, arm-2-aider-gemini, arm-3-aider-groq]
+    needs: [provider-preflight, arm-1-aider-openrouter, arm-2-gemini-cli-openrouter, arm-3-aider-nvidia, arm-4-aider-gemini]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -149,15 +204,20 @@ jobs:
           pattern: "spike-arm-*"
           merge-multiple: false
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: spike-preflight
           path: spike/out
           merge-multiple: true
       - name: Build results table and pick a winner
         env:
-          INCLUDE_ARM_3: ${{ inputs.include_arm_3 }}
-          ARM1_QUOTA_EXHAUSTED: ${{ needs.arm-1-gemini-cli.outputs.quota_exhausted }}
-          ARM2_QUOTA_EXHAUSTED: ${{ needs.arm-2-aider-gemini.outputs.quota_exhausted }}
+          OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
+          INCLUDE_GEMINI_CONTROL: ${{ inputs.include_gemini_control }}
+          PREFLIGHT_RESULT: ${{ needs.provider-preflight.result }}
+          NVIDIA_ARM: ${{ needs.provider-preflight.outputs.nvidia_arm }}
+          OPENROUTER_OK: ${{ needs.provider-preflight.outputs.openrouter_ok }}
+          ARM1_QUOTA_EXHAUSTED: ${{ needs.arm-1-aider-openrouter.outputs.quota_exhausted }}
+          ARM2_HARNESS_ERROR: ${{ needs.arm-2-gemini-cli-openrouter.outputs.harness_error }}
         run: node spike/report.mjs
       - name: Publish results to spike-results branch
         run: |

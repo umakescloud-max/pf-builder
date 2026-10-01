@@ -10,10 +10,12 @@
 # arms against each other, documented as such in DECISIONS.md.
 set -uo pipefail
 
-ARM="$1"            # arm id, e.g. "gemini-cli", "aider-gemini", "aider-groq"
+ARM="$1"            # arm id, e.g. "aider-openrouter", "gemini-cli-openrouter", "aider-nvidia", "aider-gemini"
 BUILDER="$2"         # "gemini-cli" | "aider"
 MODEL="$3"           # model string passed to the builder
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Every OpenRouter call must be an explicit :free id; a paid call already slipped through once.
+case "$MODEL" in openrouter/*:free|openrouter/*) case "$MODEL" in *:free) ;; *) echo "refusing non-:free OpenRouter model $MODEL" >&2; exit 3;; esac;; esac
 PROTO_NAME="prior-auth-tracker-v1"
 PROTO_DIR="$ROOT/prototypes/$PROTO_NAME"
 STARTER_DIR="$ROOT/archetypes/prior-auth-rcm"
@@ -74,23 +76,28 @@ scan_log() {
   if [ "$tok" != "unknown" ] && { [ "$peak_tokens" = "unknown" ] || [ "$tok" -gt "$peak_tokens" ] 2>/dev/null; }; then
     peak_tokens=$tok
   fi
-  # Daily quota is terminal for the whole spike; a per-minute limit is not
-  # (run 4: free-tier "limit: 5" requests/min on the new project was
-  # misreported as "exhausted, resume tomorrow").
-  if grep -q 'PerDay' "$log_file"; then
+  # Daily quota is terminal for that provider; a per-minute limit is not.
+  # Gemini CLI's 429 text has no quotaId (run 5: "limit: 20" was labelled
+  # per-minute) but names the class itself: TerminalQuotaError / "exhausted
+  # your daily quota" = daily, RetryableQuotaError = per-minute. OpenRouter
+  # names "free-models-per-day" / "free-models-per-min".
+  if grep -qE 'PerDay|TerminalQuotaError|exhausted your daily quota|free-models-per-day' "$log_file"; then
     quota_exhausted=true
-  elif grep -qE 'RESOURCE_EXHAUSTED|"code": ?429|quota exceeded|rate.?limit exceeded' "$log_file"; then
-    rate_limited="$(grep -E 'quotaId|Quota exceeded for metric' "$log_file" | head -2 | tr '
+  elif grep -qE 'RESOURCE_EXHAUSTED|"code": ?429|quota exceeded|rate.?limit exceeded|RateLimitError|RetryableQuotaError' "$log_file"; then
+    rate_limited="$(grep -E 'quotaId|Quota exceeded for metric|[Rr]ate limit' "$log_file" | head -2 | tr '
 ' ' ')"
   fi
   # Auth / permission / model-not-found are terminal: the builder never did
   # any work, so running the gates on the untouched starter would report a
   # meaningless gate failure (run 3, arm 2: two 403s, then "check:static").
-  if grep -qE 'PERMISSION_DENIED|UNAUTHENTICATED|AuthenticationError|NotFoundError|"code": ?(401|403|404)|[Mm]odel .{0,80}(not found|does not exist)|is not found for API version' "$log_file"; then
-    provider_error="$(grep -E 'PERMISSION_DENIED|UNAUTHENTICATED|AuthenticationError|NotFoundError|"code": ?(401|403|404)|[Mm]odel .{0,80}(not found|does not exist)|is not found for API version|"message"' "$log_file" | head -3 | tr '\n' ' ')"
+  if grep -qE 'PERMISSION_DENIED|UNAUTHENTICATED|AuthenticationError|NotFoundError|"code": ?(401|402|403|404)|Payment Required|[Mm]odel .{0,80}(not found|does not exist)|is not found for API version|No endpoints found' "$log_file"; then
+    provider_error="$(grep -E 'PERMISSION_DENIED|UNAUTHENTICATED|AuthenticationError|NotFoundError|"code": ?(401|402|403|404)|Payment Required|[Mm]odel .{0,80}(not found|does not exist)|is not found for API version|No endpoints found|"message"' "$log_file" | head -3 | tr '\n' ' ')"
   fi
-  if grep -qiE '413|payload too large|tokens per minute|tpm|TPD|tokens per day' "$log_file"; then
-    groq_reject="$(grep -iE '413|payload too large|tokens per minute|tpm|TPD|tokens per day' "$log_file" | head -1)"
+  # Request-size rejection only on explicit phrases (the old bare '413'/'tpm'
+  # also matched stack-trace line numbers).
+  local size_re='Request too large|Limit [0-9]+, Requested [0-9]+|payload too large|HTTP 413|status(Code)?[": =]+413|context_length_exceeded|maximum context length'
+  if grep -qiE "$size_re" "$log_file"; then
+    groq_reject="$(grep -iE "$size_re" "$log_file" | head -1)"
   fi
 }
 
@@ -104,17 +111,34 @@ run_builder() {
   fi
 
   pushd "$PROTO_DIR" >/dev/null
+  # 20-minute ceiling per attempt: a hung free endpoint must not eat the job.
   if [ "$BUILDER" = "gemini-cli" ]; then
-    GEMINI_CLI_TRUST_WORKSPACE=true gemini -p "$prompt_text" --yolo --output-format json >"$log_file" 2>&1
+    GEMINI_CLI_TRUST_WORKSPACE=true timeout 1200 gemini -p "$prompt_text" --yolo --output-format json >"$log_file" 2>&1
   else
     echo "$prompt_text" >"$OUT_DIR/attempt-$attempt-prompt.txt"
-    aider --message-file "$OUT_DIR/attempt-$attempt-prompt.txt" \
-      --model "$MODEL" --yes-always --no-stream --no-pretty \
-      --no-check-update --no-analytics >"$log_file" 2>&1
+    # prototypes/ is gitignored in pf-builder, and aider skips gitignored
+    # files, so give the prototype its own repo (removed again below).
+    # The editable allowlist is passed explicitly so aider never has to ask
+    # for files; --weak-model/--no-auto-commits stop it spending extra
+    # requests on commit messages with some other model.
+    [ -d .git ] || { git init -q && git add -A && git -c user.name=pf -c user.email=pf@example.invalid commit -qm start; }
+    timeout 1200 aider --message-file "$OUT_DIR/attempt-$attempt-prompt.txt"       --model "$MODEL" --weak-model "$MODEL" --yes-always --no-stream --no-pretty       --no-auto-commits --no-check-update --no-analytics       src/screens/*.tsx src/nav.ts src/seed.ts src/tour.json >"$log_file" 2>&1
   fi
   local exit_code=$?
+  rm -rf .git
   popd >/dev/null
   scan_log "$log_file"
+  # Gemini CLI via the LiteLLM proxy: the proxy log is the only request
+  # ledger (the CLI's JSON stats name models, not requests). A floor: litellm
+  # internal retries are not visible. Overrides the CLI-log count.
+  if [ -n "${PROXY_LOG:-}" ] && [ -f "$PROXY_LOG" ]; then
+    local total n_proxy
+    total=$(wc -l <"$PROXY_LOG")
+    n_proxy=$(tail -n +$((${PROXY_LOG_OFFSET:-0} + 1)) "$PROXY_LOG" | grep -cE 'POST /v1beta/models/[^ ]*[gG]enerateContent')
+    PROXY_LOG_OFFSET=$total
+    proxy_requests=$((${proxy_requests:-0} + n_proxy))
+    [ "$proxy_requests" -gt 0 ] && requests=$proxy_requests
+  fi
   return $exit_code
 }
 
@@ -192,7 +216,7 @@ main() {
 
     # Builder produced nothing (couldn't start, rate-limited out, empty reply):
     # gates would just fail on the untouched starter and blame the wrong party.
-    if diff -rq --exclude=node_modules --exclude=dist --exclude='.aider*' --exclude=package.json         "$STARTER_DIR" "$PROTO_DIR" >/dev/null 2>&1; then
+    if diff -rq --exclude=node_modules --exclude=dist --exclude=.git --exclude='.aider*' --exclude=package.json         "$STARTER_DIR" "$PROTO_DIR" >/dev/null 2>&1; then
       if [ -n "$rate_limited" ]; then
         write_result "rate_limited" "none" "$attempt" "Builder made no changes; per-minute rate limit: $rate_limited"
       else
