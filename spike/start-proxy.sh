@@ -41,6 +41,12 @@ for m in gemini-3-flash-preview gemini-2.5-flash-lite; do
 done | tee "$OUT/proxy-smoke.log"
 grep -q '^HTTP 200' "$OUT/proxy-smoke.log" && ! grep -q '^HTTP [^2]' "$OUT/proxy-smoke.log" || { echo "proxy smoke test failed (harness)" >&2; exit 4; }
 
+# gemini-cli 0.62.0 maps GOOGLE_GEMINI_BASE_URL to auth type "gateway", which its own
+# headless validateAuthMethod rejects ("Invalid auth method selected", run 6 dispatch 1).
+# Pinning gemini-api-key keeps the base-URL override and passes validation.
+mkdir -p "$HOME/.gemini"
+echo '{"security":{"auth":{"selectedType":"gemini-api-key"}}}' >"$HOME/.gemini/settings.json"
+
 echo "GOOGLE_GEMINI_BASE_URL=http://localhost:4000" >>"$GITHUB_ENV"
 echo "GEMINI_API_KEY=$KEY" >>"$GITHUB_ENV"
 echo "PROXY_LOG=$PWD/$OUT/proxy.log" >>"$GITHUB_ENV"

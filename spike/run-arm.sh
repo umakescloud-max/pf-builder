@@ -122,7 +122,7 @@ run_builder() {
     # for files; --weak-model/--no-auto-commits stop it spending extra
     # requests on commit messages with some other model.
     [ -d .git ] || { git init -q && git add -A && git -c user.name=pf -c user.email=pf@example.invalid commit -qm start; }
-    timeout 1200 aider --message-file "$OUT_DIR/attempt-$attempt-prompt.txt"       --model "$MODEL" --weak-model "$MODEL" --yes-always --no-stream --no-pretty       --no-auto-commits --no-check-update --no-analytics       src/screens/*.tsx src/nav.ts src/seed.ts src/tour.json >"$log_file" 2>&1
+    timeout 1200 aider --message-file "$OUT_DIR/attempt-$attempt-prompt.txt"       --model "$MODEL" --weak-model "$MODEL" --yes-always --no-stream --no-pretty       --no-auto-commits --no-gitignore --no-check-update --no-analytics       src/screens/*.tsx src/nav.ts src/seed.ts src/tour.json >"$log_file" 2>&1
   fi
   local exit_code=$?
   rm -rf .git

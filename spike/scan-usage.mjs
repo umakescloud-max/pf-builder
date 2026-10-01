@@ -43,6 +43,13 @@ function fromAiderText() {
     const received = parseFloat(m[3]) * (m[4] ? 1000 : 1);
     peak = Math.max(peak, sent + received);
   }
+  // A response that hits the model's output cap prints no "Tokens:" line; aider
+  // prints "Total tokens: ~N" instead (run 6: laguna-s-2.1, ~67k, looped to the cap).
+  const lim = /Total tokens:\s*~([\d,]+)/g;
+  while ((m = lim.exec(raw))) {
+    requests++;
+    peak = Math.max(peak, parseInt(m[1].replace(/,/g, ""), 10));
+  }
   if (requests === 0) return null;
   return { requests, peak_tokens: Math.round(peak) };
 }
