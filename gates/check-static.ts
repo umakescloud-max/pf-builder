@@ -121,7 +121,13 @@ function checkTourRoutesExist(prototypeDir: string, violations: Violation[]) {
 
   const seenTargets = new Set<string>();
   for (const step of tour) {
-    if (!routeMatches.includes(step.route)) {
+    if (step.route === undefined) {
+      violations.push({
+        file: "src/tour.json",
+        rule: "tour-route-missing",
+        detail: `step "${step.id}" has no "route" field. Every tour.json step needs "route": the router path of the screen named by its screen_id (that screen's "route" in the brief, e.g. "/denials"), exactly as registered in App.tsx. Keep id, screen_id, target, title, body as they are.`,
+      });
+    } else if (!routeMatches.includes(step.route)) {
       violations.push({
         file: "src/tour.json",
         rule: "tour-route-missing",
