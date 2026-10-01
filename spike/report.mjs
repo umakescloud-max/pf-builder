@@ -24,11 +24,23 @@ const rows = results.map((r) =>
 
 const winner = results.find((r) => r.status === "pass");
 
+const preflightPath = path.join(OUT_DIR, "preflight-providers.json");
+let preflightSection = "";
+if (existsSync(preflightPath)) {
+  const pf = JSON.parse(readFileSync(preflightPath, "utf-8"));
+  const pfHeader = "| Provider | OK | Status | Latency (ms) | Model echoed | Rate-limit headers |\n|---|---|---|---|---|---|";
+  const pfRows = Object.entries(pf).map(
+    ([name, r]) =>
+      `| ${name} | ${r.ok ? "yes" : "no"} | ${r.status ?? "—"} | ${r.latency_ms ?? "—"} | ${r.model ?? "—"} | ${JSON.stringify(r.rate_limit_headers ?? {})} |`
+  );
+  preflightSection = ["", "## Provider preflight (one minimal completion each)", "", pfHeader, ...pfRows, ""].join("\n");
+}
+
 const table = [
   "# Phase 2 builder spike — results",
   "",
   `Run date: ${new Date().toISOString().slice(0, 10)}. $0 cost confirmed — all three arms run against free-tier keys only.`,
-  "",
+  preflightSection,
   header,
   ...rows,
   "",

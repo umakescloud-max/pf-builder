@@ -1,7 +1,12 @@
 name: Phase 2 builder spike
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      include_arm_3:
+        description: "Run arm 3 (Aider x Groq openai/gpt-oss-120b)? Already confirmed unusable as a full-build model (8k TPM ceiling) in run 1 — leave unchecked to save Groq quota unless re-testing that specific finding."
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -29,8 +34,29 @@ jobs:
           fi
           echo "Required secrets present."
 
-  arm-1-gemini-cli:
+  provider-preflight:
     needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - name: One minimal completion per provider (Gemini is a hard gate, Groq/NVIDIA/OpenRouter are informational)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: node spike/preflight-providers.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-preflight
+          path: spike/out/preflight-providers.json
+          if-no-files-found: ignore
+
+  arm-1-gemini-cli:
+    needs: provider-preflight
     runs-on: ubuntu-latest
     outputs:
       quota_exhausted: ${{ steps.run.outputs.quota_exhausted }}
@@ -88,7 +114,7 @@ jobs:
 
   arm-3-aider-groq:
     needs: arm-2-aider-gemini
-    if: always()
+    if: always() && inputs.include_arm_3
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -112,7 +138,7 @@ jobs:
           if-no-files-found: ignore
 
   report:
-    needs: [arm-1-gemini-cli, arm-2-aider-gemini, arm-3-aider-groq]
+    needs: [provider-preflight, arm-1-gemini-cli, arm-2-aider-gemini, arm-3-aider-groq]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -122,6 +148,11 @@ jobs:
           path: spike/out
           pattern: "spike-arm-*"
           merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: spike-preflight
+          path: spike/out
+          merge-multiple: true
       - name: Build results table and pick a winner
         run: node spike/report.mjs
       - name: Publish results to spike-results branch
