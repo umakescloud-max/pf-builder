@@ -33,7 +33,7 @@ function fromGeminiJson() {
 }
 
 function fromAiderText() {
-  const re = /Tokens:\s*([\d.]+)(k)?\s*sent,\s*([\d.]+)(k)?\s*received/gi;
+  const re = /Tokens:\s*([\d.]+)(k)?\s*sent,(?:[^,\n]*cache[^,\n]*,)?\s*([\d.]+)(k)?\s*received/gi;
   let requests = 0;
   let peak = 0;
   let m;

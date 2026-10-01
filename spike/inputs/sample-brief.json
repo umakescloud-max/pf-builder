@@ -1,0 +1,182 @@
+{
+  "demoable": true,
+  "duplicate_of": null,
+  "name_base": "prior-auth-tracker",
+  "archetype": "prior-auth-rcm",
+  "title": "Prior auth tracker for a 6-provider orthopedic practice",
+  "one_liner": "Tracks every prior authorization from submission to decision, flags denials with a reason, and routes appeals before the payer deadline.",
+  "practice": {
+    "name": "Riverside Orthopedic Associates",
+    "type": "Orthopedic practice, outpatient imaging and procedures",
+    "size": "6 providers, 2 locations, ~40 prior auth requests per week"
+  },
+  "persona": {
+    "name": "Dana Whitfield",
+    "role": "Prior authorization coordinator",
+    "day_in_the_life": "Dana starts at 7:30am with 12 open auth requests across 4 payers. She checks each payer's portal separately, writes status updates into a shared spreadsheet, and calls two payers whose auths are overdue past the 5-business-day SLA. By 9am she's found a denial from Meridian Health Partners for case #4471, decided 3 business days ago but nobody saw it — the appeal window is 5 business days from the decision, so only 2 business days remain and no one has started the appeal."
+  },
+  "problem": {
+    "current_workflow": "Auth status lives in a shared spreadsheet, updated manually from four different payer portals with no reminders. Denials sit unread until someone happens to check the portal.",
+    "pain_points": [
+      "No single view of auth status across payers",
+      "Denials are discovered late, after days have already passed on the appeal clock",
+      "Appeal deadlines are tracked from memory, not from a system",
+      "No record of which denial reasons recur, so the practice can't fix root causes"
+    ],
+    "cost_of_pain": "Dana estimates 6-8 hours per week re-checking portals manually, and the practice loses an estimated $14,000 per quarter in missed-deadline denials that could have been appealed."
+  },
+  "story": {
+    "before": "7:30am: Dana opens the spreadsheet and four payer portals in separate tabs. She manually copies status for 12 open cases. At 8:52am she happens to notice, while checking an unrelated case, that case #4471 (Meridian Health Partners, lumbar MRI for patient J. Alvarez) was decided 3 business days ago: denied for 'missing clinical documentation.' The appeal window is 5 business days from the decision date — only 2 business days remain, and no one has started the appeal.",
+    "after": "7:30am: Dana opens the tracker. The dashboard already shows case #4471 flagged red in Denials, 'Denied — missing documentation,' with 2 business days left on the clock and the missing document already identified. Dana attaches the missing clinical note, moves the case into the Appeals queue herself, reviews the drafted appeal summary, and submits it in two clicks. Nothing moved on its own — she drove every step. She moves to the next flagged case; all 12 open cases are visible in one list with days-to-SLA shown for each."
+  },
+  "edge_case": {
+    "scenario": "Case #4471 (Meridian Health Partners, lumbar spine MRI, patient J. Alvarez) is denied with reason code 'missing clinical documentation' — the referring physician's progress note wasn't attached to the original submission.",
+    "how_handled": "The case appears in the Denials screen flagged red with the specific missing item named and a live countdown (computed from decision_date and appeal_deadline, never a written-in number) to the appeal deadline. Dana attaches the missing document and moves the case into the Appeals queue herself; nothing moves automatically.",
+    "screen_id": "denials"
+  },
+  "human_checkpoint": {
+    "where": "Appeals queue",
+    "what_staff_does": "Dana reviews the identified missing document and the drafted appeal summary, attaches the correct file, and clicks 'Submit appeal' — nothing is sent to the payer without her explicit action.",
+    "screen_id": "appeals"
+  },
+  "named_tools": ["Availity", "Epic"],
+  "metrics": [
+    { "label": "Open auth requests", "computed_from": "Count of cases where status is submitted or pending" },
+    { "label": "Average days to decision", "computed_from": "Mean of (decision_date - submitted_date) across decided cases" },
+    { "label": "Denial rate", "computed_from": "Count of cases where status equals denied, divided by count of cases where status is approved or denied, last 30 days by decision_date" },
+    { "label": "Appeals won", "computed_from": "Count of denied cases where appeal_status equals won" }
+  ],
+  "screens": [
+    {
+      "id": "story",
+      "route": "/",
+      "name": "Story",
+      "purpose": "Introduce Dana, the practice, and the before/after of her morning.",
+      "components": ["AppShell", "ConceptBadge", "StoryPanel", "TourRunner"],
+      "actions": [
+        { "label": "Start the tour", "effect": "Begins the guided tour from the auth tracker screen" }
+      ]
+    },
+    {
+      "id": "tracker",
+      "route": "/tracker",
+      "name": "Auth tracker",
+      "purpose": "Single list of all open and recent prior auth cases across payers, with days-to-SLA.",
+      "components": ["AppShell", "DataTable", "StatusPill", "MetricPanel", "RecordDrawer"],
+      "actions": [
+        { "label": "Open case", "effect": "Opens case #4471 on the Case screen" },
+        { "label": "Filter by payer", "effect": "Narrows the list to the selected payer" }
+      ]
+    },
+    {
+      "id": "case",
+      "route": "/case",
+      "name": "Case",
+      "purpose": "Full history and document set for the selected prior auth case, defaulting to #4471.",
+      "components": ["AppShell", "Timeline", "DocumentViewer", "StatusPill", "AuditLog"],
+      "actions": [
+        { "label": "Add note", "effect": "Appends a timestamped note to the case timeline" }
+      ]
+    },
+    {
+      "id": "denials",
+      "route": "/denials",
+      "name": "Denials",
+      "purpose": "Every denied case, with the specific denial reason and a live appeal deadline countdown.",
+      "components": ["AppShell", "DataTable", "ScenarioBanner", "StatusPill", "RecordDrawer"],
+      "actions": [
+        { "label": "Attach missing document", "effect": "Attaches the identified document and marks the case ready for appeal" },
+        { "label": "Move to appeals", "effect": "Moves the case into the appeals queue" }
+      ]
+    },
+    {
+      "id": "appeals",
+      "route": "/appeals",
+      "name": "Appeals queue",
+      "purpose": "Cases pending human review and submission back to the payer.",
+      "components": ["AppShell", "ApprovalQueue", "DocumentViewer", "AuditLog", "ActivityToast"],
+      "actions": [
+        { "label": "Submit appeal", "effect": "Submits the appeal to the payer and logs the submission with timestamp" },
+        { "label": "Return for more info", "effect": "Sends the case back to the tracker flagged as needing more documentation" }
+      ]
+    },
+    {
+      "id": "architecture",
+      "route": "/architecture",
+      "name": "How this would work",
+      "purpose": "Shows the real-world system this prototype represents, and the compliance posture it implies.",
+      "components": ["AppShell", "ArchitectureView", "IntegrationTiles"],
+      "actions": []
+    }
+  ],
+  "seed_data": {
+    "entities": [
+      {
+        "name": "Prior auth cases",
+        "count": 85,
+        "fields": [
+          "case_id", "patient_name", "payer", "procedure_cpt", "procedure_label",
+          "icd10_code", "icd10_label", "submitted_date", "decision_date",
+          "status", "denial_reason", "appeal_deadline", "sla_days", "appeal_status"
+        ],
+        "realism_notes": "Roughly 60% submitted/pending, 25% approved, 15% denied. Denials spread across 4 plain-language reasons (missing documentation, not medically necessary per policy, incomplete clinical info, duplicate request). Payers are all fictional: Meridian Health Partners, Palmetto Health Plan, Lakeshore Mutual, Crestview Benefits. Among denied cases, appeal_status is distributed roughly 40% none, 30% submitted, 20% won, 10% lost. Case #4471 is the edge case: Meridian Health Partners, lumbar MRI, patient J. Alvarez, submitted_date = 10 business days before decision_date, decision_date = 3 business days ago (denied, 'missing clinical documentation'), appeal_deadline = decision_date + 5 business days (so 2 business days remain as of today), appeal_status = none until the tour's Appeals step moves it to submitted."
+      },
+      {
+        "name": "Case notes",
+        "count": 210,
+        "fields": ["case_id", "author", "timestamp", "note_text"],
+        "realism_notes": "2-3 notes per case on average across 85 cases, timestamps relative to each case's submitted_date, written in plain operational language ('Called the payer, on hold 20 min, no update')."
+      }
+    ]
+  },
+  "tour": [
+    { "id": "meet-dana", "screen_id": "story", "target": "story-panel", "title": "Meet Dana", "body": "Dana manages prior auth for a 6-provider orthopedic practice. Here's her morning before and after this tool." },
+    { "id": "all-cases-one-view", "screen_id": "tracker", "target": "tracker-table", "title": "Every case, one view", "body": "All open and recent prior auth cases across every payer, with days remaining on each SLA." },
+    { "id": "case-history", "screen_id": "case", "target": "case-timeline", "title": "Full case history", "body": "Every submission, call, and document for a case, in one timeline." },
+    { "id": "denial-flagged", "screen_id": "denials", "target": "denial-row-4471", "title": "A denial, caught immediately", "body": "This case was denied for a missing clinical note. The system flagged it the moment the payer responded, not days later." },
+    { "id": "appeal-deadline", "screen_id": "denials", "target": "appeal-countdown", "title": "The clock is visible", "body": "A live countdown to the appeal deadline. No more guessing from memory." },
+    { "id": "human-review", "screen_id": "appeals", "target": "approval-queue-item", "title": "Dana still decides", "body": "Nothing goes back to the payer until Dana reviews it and clicks submit herself." },
+    { "id": "metrics-overview", "screen_id": "tracker", "target": "metric-panel", "title": "The numbers that matter", "body": "Open cases, average decision time, denial rate, and appeals won — all computed from real case data." },
+    { "id": "how-it-works", "screen_id": "architecture", "target": "architecture-diagram", "title": "How this would be built", "body": "This concept maps to the practice's existing tools: Epic for records, Availity and payer portals for submission, with human approval before every payer-facing action." }
+  ],
+  "architecture": {
+    "nodes": [
+      { "id": "epic", "label": "Epic (EHR)", "kind": "system" },
+      { "id": "availity", "label": "Availity", "kind": "system" },
+      { "id": "payer-portals", "label": "Payer portals", "kind": "system" },
+      { "id": "tracker-ui", "label": "Prior auth tracker (this prototype)", "kind": "app" },
+      { "id": "claude", "label": "Claude (document review)", "kind": "model" },
+      { "id": "staff", "label": "Dana (coordinator)", "kind": "human" }
+    ],
+    "edges": [
+      { "from": "epic", "to": "tracker-ui", "label": "Patient and case data" },
+      { "from": "availity", "to": "tracker-ui", "label": "Submission status" },
+      { "from": "payer-portals", "to": "tracker-ui", "label": "Decision and denial reason" },
+      { "from": "tracker-ui", "to": "claude", "label": "Flags missing documentation" },
+      { "from": "tracker-ui", "to": "staff", "label": "Surfaces flagged cases for review" },
+      { "from": "staff", "to": "payer-portals", "label": "Submits appeal, human-approved" }
+    ],
+    "compliance_notes": [
+      "Patient data would be stored encrypted at rest and in transit",
+      "All payer-facing submissions require explicit staff approval before sending",
+      "Access is role-restricted to authorized billing staff, with full audit logging",
+      "Any AI-assisted document review operates under a signed BAA; no PHI is sent to a model without one",
+      "Only the minimum necessary case data is shared with each integrated system"
+    ]
+  },
+  "design": {
+    "palette": {
+      "surface": "#F4F6F3",
+      "ink": "#1F2A24",
+      "primary": "#2F5D50",
+      "accent": "#C98A2C",
+      "muted": "#5E6B64"
+    },
+    "typefaces": {
+      "heading": "Source Serif 4",
+      "body": "Public Sans"
+    },
+    "rationale": "A deep green grounded in clinical calm, with a muted amber accent used only as a fill (never as text color) for alerts and deadlines, pairs a serif for headings (credibility, unhurried) with a clean humanist sans for data-dense tables."
+  },
+  "voice_demo": null
+}

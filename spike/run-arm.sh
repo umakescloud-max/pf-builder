@@ -17,8 +17,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROTO_NAME="prior-auth-tracker-v1"
 PROTO_DIR="$ROOT/prototypes/$PROTO_NAME"
 STARTER_DIR="$ROOT/archetypes/prior-auth-rcm"
-BRIEF="$ROOT/../pf-engine/fixtures/sample-brief.json"
-PROMPT="$ROOT/../pf-engine/prompts/builder.md"
+# Snapshots of pf-engine/prompts/builder.md and fixtures/sample-brief.json:
+# pf-engine is not checked out in the CI job, so the old ../pf-engine paths
+# resolved to nothing and every builder got an empty prompt (run 4: 12 bytes).
+# ponytail: manual copies, re-copy when either source changes.
+BRIEF="$ROOT/spike/inputs/sample-brief.json"
+PROMPT="$ROOT/spike/inputs/builder.md"
+[ -s "$BRIEF" ] && [ -s "$PROMPT" ] || { echo "missing/empty spike inputs" >&2; exit 3; }
 OUT_DIR="$ROOT/spike/out/$ARM"
 mkdir -p "$OUT_DIR"
 
@@ -29,6 +34,7 @@ peak_tokens="unknown"
 quota_exhausted=false
 groq_reject=""
 provider_error=""
+rate_limited=""
 
 log() { echo "[$ARM] $*"; }
 
@@ -62,14 +68,20 @@ scan_log() {
   local n tok
   n=$(echo "$parsed" | cut -d' ' -f1)
   tok=$(echo "$parsed" | cut -d' ' -f2)
-  if [ "$n" != "unknown" ] && { [ "$requests" = "unknown" ] || [ "$n" -gt "$requests" ]; }; then
-    requests=$n
+  if [ "$n" != "unknown" ]; then
+    if [ "$requests" = "unknown" ]; then requests=$n; else requests=$((requests + n)); fi
   fi
   if [ "$tok" != "unknown" ] && { [ "$peak_tokens" = "unknown" ] || [ "$tok" -gt "$peak_tokens" ] 2>/dev/null; }; then
     peak_tokens=$tok
   fi
-  if grep -qiE 'RESOURCE_EXHAUSTED|429|quota exceeded|rate.?limit exceeded' "$log_file"; then
+  # Daily quota is terminal for the whole spike; a per-minute limit is not
+  # (run 4: free-tier "limit: 5" requests/min on the new project was
+  # misreported as "exhausted, resume tomorrow").
+  if grep -q 'PerDay' "$log_file"; then
     quota_exhausted=true
+  elif grep -qE 'RESOURCE_EXHAUSTED|"code": ?429|quota exceeded|rate.?limit exceeded' "$log_file"; then
+    rate_limited="$(grep -E 'quotaId|Quota exceeded for metric' "$log_file" | head -2 | tr '
+' ' ')"
   fi
   # Auth / permission / model-not-found are terminal: the builder never did
   # any work, so running the gates on the untouched starter would report a
@@ -93,7 +105,7 @@ run_builder() {
 
   pushd "$PROTO_DIR" >/dev/null
   if [ "$BUILDER" = "gemini-cli" ]; then
-    gemini -p "$prompt_text" --yolo --output-format json >"$log_file" 2>&1
+    GEMINI_CLI_TRUST_WORKSPACE=true gemini -p "$prompt_text" --yolo --output-format json >"$log_file" 2>&1
   else
     echo "$prompt_text" >"$OUT_DIR/attempt-$attempt-prompt.txt"
     aider --message-file "$OUT_DIR/attempt-$attempt-prompt.txt" \
@@ -178,6 +190,18 @@ main() {
       exit 0
     fi
 
+    # Builder produced nothing (couldn't start, rate-limited out, empty reply):
+    # gates would just fail on the untouched starter and blame the wrong party.
+    if diff -rq --exclude=node_modules --exclude=dist --exclude='.aider*' --exclude=package.json         "$STARTER_DIR" "$PROTO_DIR" >/dev/null 2>&1; then
+      if [ -n "$rate_limited" ]; then
+        write_result "rate_limited" "none" "$attempt" "Builder made no changes; per-minute rate limit: $rate_limited"
+      else
+        write_result "builder_no_changes" "none" "$attempt" "Builder exited without changing any file. Log tail: $(tail -c 600 "$OUT_DIR/attempt-$attempt.log" | tr '
+' ' ')"
+      fi
+      exit 0
+    fi
+
     local forbidden
     forbidden="$(check_allowlist)"
     if [ -n "$forbidden" ]; then
@@ -201,12 +225,12 @@ main() {
     fi
 
     if [ "$attempt" -eq 2 ]; then
-      write_result "gate_failed" "$gate" "$attempt" "$(tail -c 4000 "$OUT_DIR/gate-$gate.log" 2>/dev/null || echo 'see gate log')"
+      write_result "gate_failed" "$gate" "$attempt" "$(tail -c 4000 "$OUT_DIR/gate-${gate//:/-}.log" 2>/dev/null || echo 'see gate log')"
       exit 0
     fi
 
     fix_block="The $gate gate failed. Fix only this — do not refactor or touch anything else:
-$(tail -c 4000 "$OUT_DIR/gate-$gate.log" 2>/dev/null || echo 'see gate log')"
+$(tail -c 4000 "$OUT_DIR/gate-${gate//:/-}.log" 2>/dev/null || echo 'see gate log')"
     attempt=$((attempt + 1))
   done
 }
