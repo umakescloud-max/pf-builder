@@ -122,7 +122,9 @@ const out = { prompt_bytes: Buffer.byteLength(prompt), openrouter: {}, nvidia: {
 // ---- OpenRouter: arms A and B ----
 const orKey = process.env.OPENROUTER_API_KEY;
 const orOk = {};
-if (!orKey) {
+if (process.env.SKIP_OPENROUTER === "true") {
+  out.openrouter.skipped = "arms A and B are off";
+} else if (!orKey) {
   out.openrouter.error = "OPENROUTER_API_KEY not set";
 } else {
   out.openrouter.key_before = await orKeyInfo(orKey);

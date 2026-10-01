@@ -10,16 +10,18 @@
 //
 // With --paced-nvidia, `--model` is the bare NIM id and calls go through a local
 // proxy that spaces upstream requests 4 s apart and aborts the arm on 3
-// CONSECUTIVE 429s (provider_rate_limited). Burst 429s alone never abort.
+// CONSECUTIVE 429s (provider_rate_limited). Burst 429s alone never abort. The proxy buffers each
+// upstream response; a 200 with zero output tokens and no error is logged raw (<log>.raw-empty.jsonl,
+// also echoed as RAW_EMPTY_RESPONSE) and retried once; a second empty ends the attempt as
+// empty_step_after_retry.
 //
 // Writes {outcome, steps, peak_tokens, proxy_requests, detail} to --result and
 // always exits 0 (the outcome is the signal). Outcomes: completed |
 // builder_timeout | builder_hung | builder_request_cap | provider_error |
-// provider_rate_limited | config_error. Thresholds are env-overridable for tests.
+// provider_rate_limited | empty_step_after_retry | config_error. Thresholds are env-overridable for tests.
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { createWriteStream, readFileSync, writeFileSync } from "node:fs";
-import { Readable } from "node:stream";
+import { appendFileSync, createWriteStream, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -35,38 +37,91 @@ const COOLDOWN_MS = +(env.PF_COOLDOWN_MS ?? 20_000); // after a 429, OpenCode re
 const GRACE_MS = +(env.PF_GRACE_MS ?? 15_000); // after a terminal event, let it exit on its own
 const NV_UPSTREAM = env.PF_NVIDIA_UPSTREAM ?? "https://integrate.api.nvidia.com";
 
-const state = { outcome: null, detail: "", steps: 0, peak: 0, proxyRequests: 0, sawTokens: false };
+const rawLog = logFile.replace(/\.log$/, ".raw-empty.jsonl");
+const state = { emptySteps: 0, emptyRecovered: 0, outcome: null, detail: "", steps: 0, peak: 0, proxyRequests: 0, sawTokens: false };
 const finish = (outcome, detail) => { if (!state.outcome) { state.outcome = outcome; state.detail = detail; } };
 
 // Every OpenRouter id carries :free; OpenCode never runs against Gemini.
 if (/^openrouter\//.test(model ?? "") && !model.endsWith(":free")) finish("config_error", `refusing non-:free OpenRouter model ${model}`);
 if (/gemini|^google\//i.test(model ?? "")) finish("config_error", `OpenCode must never run against Gemini (${model})`);
 
+// One step = one chat-completions request. An empty step (HTTP 200, no error, zero output
+// tokens: no content, reasoning or tool call) is logged raw and retried once, so a provider
+// that returned an empty body is distinguishable from a model that gave up.
+function inspect(buf) {
+  const text = buf.toString("utf-8"), chunks = [];
+  if (/^\s*(data:|event:|:)/.test(text)) {
+    for (const line of text.split("\n")) {
+      const d = line.startsWith("data:") ? line.slice(5).trim() : "";
+      if (d && d !== "[DONE]") try { chunks.push(JSON.parse(d)); } catch {}
+    }
+  } else try { chunks.push(JSON.parse(text)); } catch {}
+  let produced = false, finish = null, usage = null, error = null;
+  for (const c of chunks) {
+    usage = c.usage ?? usage; error = c.error ?? error;
+    for (const ch of c.choices ?? []) {
+      const d = ch.delta ?? ch.message ?? {};
+      if (d.content || d.reasoning_content || d.reasoning || d.tool_calls?.length) produced = true;
+      finish = ch.finish_reason ?? finish;
+    }
+  }
+  return { finish, usage, empty: !error && !produced && !(usage?.completion_tokens > 0) };
+}
+const isEmpty = (r) => r.status === 200 && inspect(r.buf).empty;
+function logEmpty(reqBody, r, retry) {
+  const { finish, usage } = inspect(r.buf);
+  let req = {};
+  try { const j = JSON.parse(reqBody); req = { model: j.model, messages: j.messages?.length, stream: j.stream, request_bytes: reqBody.length, last_role: j.messages?.at(-1)?.role }; } catch {}
+  const rec = { at: new Date().toISOString(), upstream_request: state.proxyRequests, is_retry: retry, status: r.status, finish_reason: finish, usage, headers: r.allHeaders, request: req, body_bytes: r.buf.length, body: r.buf.toString("utf-8").slice(0, 20_000) };
+  appendFileSync(rawLog, JSON.stringify(rec) + "\n");
+  console.log("RAW_EMPTY_RESPONSE " + JSON.stringify(rec));
+  state.emptySteps++;
+}
+
 let proxy;
 if (!state.outcome && paced) {
   let nextSlot = 0, consecutive429 = 0;
-  proxy = createServer(async (req, res) => {
-    const chunks = [];
-    for await (const c of req) chunks.push(c);
+  // Paced upstream call; resolves {status, headers, allHeaders, buf}, or null once the request cap is hit.
+  const upstream = async (req, body) => {
     const now = Date.now();
     const at = Math.max(now, nextSlot);
     nextSlot = at + PACE_MS;
     if (at > now) await new Promise((r) => setTimeout(r, at - now));
-    if (++state.proxyRequests > REQ_CAP) { finish("builder_request_cap", `more than ${REQ_CAP} upstream requests`); res.writeHead(503).end(); return stop(); }
+    if (++state.proxyRequests > REQ_CAP) { finish("builder_request_cap", `more than ${REQ_CAP} upstream requests`); stop(); return null; }
+    const up = await fetch(NV_UPSTREAM + req.url, {
+      method: req.method,
+      headers: { "content-type": req.headers["content-type"] ?? "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${env.NVIDIA_API_KEY}` },
+      body: ["GET", "HEAD"].includes(req.method) ? undefined : body,
+    });
+    const buf = Buffer.from(await up.arrayBuffer());
+    if (up.status === 429) {
+      const ra = up.headers.get("retry-after"), text = buf.toString("utf-8").slice(0, 400);
+      nextSlot = Math.max(nextSlot, Date.now() + Math.min(COOLDOWN_MS, 60_000, ra ? +ra * 1000 || COOLDOWN_MS : COOLDOWN_MS));
+      if (++consecutive429 >= 3) { finish("provider_rate_limited", `3 consecutive 429s from NVIDIA (retry-after: ${ra ?? "none"}; body: ${text}; ${state.steps} step(s) finished)`); stop(); }
+    } else consecutive429 = 0;
+    const allHeaders = Object.fromEntries(up.headers);
+    const headers = Object.fromEntries(Object.entries(allHeaders).filter(([k]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k)));
+    return { status: up.status, headers, allHeaders, buf };
+  };
+  proxy = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const body = Buffer.concat(chunks);
     try {
-      const up = await fetch(NV_UPSTREAM + req.url, {
-        method: req.method,
-        headers: { "content-type": req.headers["content-type"] ?? "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${env.NVIDIA_API_KEY}` },
-        body: ["GET", "HEAD"].includes(req.method) ? undefined : Buffer.concat(chunks),
-      });
-      if (up.status === 429) {
-        const ra = up.headers.get("retry-after"), body = (await up.clone().text().catch(() => "")).slice(0, 400);
-        nextSlot = Math.max(nextSlot, Date.now() + Math.min(COOLDOWN_MS, 60_000, ra ? +ra * 1000 || COOLDOWN_MS : COOLDOWN_MS));
-        if (++consecutive429 >= 3) { finish("provider_rate_limited", `3 consecutive 429s from NVIDIA (retry-after: ${ra ?? "none"}; body: ${body}; ${state.steps} step(s) finished)`); stop(); }
-      } else consecutive429 = 0;
-      const h = Object.fromEntries([...up.headers].filter(([k]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k)));
-      res.writeHead(up.status, h);
-      up.body ? Readable.fromWeb(up.body).pipe(res) : res.end();
+      let r = await upstream(req, body);
+      if (r && isEmpty(r)) {
+        logEmpty(body, r, false);
+        r = await upstream(req, body); // the one retry
+        if (r && isEmpty(r)) {
+          logEmpty(body, r, true);
+          const { finish: f, usage } = inspect(r.buf);
+          finish("empty_step_after_retry", `step ${state.steps + 1}: HTTP 200 with zero output tokens twice in a row (finish_reason ${f}; usage ${JSON.stringify(usage)}; ${r.buf.length} body bytes); raw in ${path.basename(rawLog)}`);
+          res.writeHead(502).end(); return stop();
+        }
+        if (r) state.emptyRecovered++;
+      }
+      if (!r) { res.writeHead(503).end(); return; }
+      res.writeHead(r.status, r.headers).end(r.buf);
     } catch (e) { res.writeHead(502).end(String(e)); }
   });
   await new Promise((r) => proxy.listen(0, "127.0.0.1", r));
@@ -151,5 +206,6 @@ writeFileSync(resultFile, JSON.stringify({
   outcome: state.outcome, detail: state.detail, steps: state.steps,
   peak_tokens: state.sawTokens ? state.peak : "unknown",
   proxy_requests: paced ? state.proxyRequests : "unknown",
+  empty_steps: state.emptySteps, empty_recovered: state.emptyRecovered,
 }));
 process.exit(0);

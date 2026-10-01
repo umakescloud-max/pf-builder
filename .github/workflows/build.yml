@@ -23,6 +23,10 @@ on:
         description: "Retired: Arm A (OpenCode x north-mini-code:free) - 25 reads, 0 writes in dispatch 1 (builder verdict). Quota freed."
         type: boolean
         default: false
+      include_arm_b:
+        description: "Arm B (Aider diff x OpenRouter laguna-s-2.1:free). Off for dispatch 5 (arm C only)."
+        type: boolean
+        default: false
       include_gemini_cli_arm:
         description: "Retired: Gemini CLI x OpenRouter (litellm proxy + selectedType pin; no outcome is attributable). Adapter kept."
         type: boolean
@@ -94,6 +98,7 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          SKIP_OPENROUTER: ${{ !inputs.include_arm_a && !inputs.include_arm_b }}
         run: node spike/preflight-providers.mjs
       - uses: actions/upload-artifact@v4
         if: always()
@@ -135,7 +140,7 @@ jobs:
   arm-b-aider-openrouter:
     needs: [provider-preflight, arm-a-opencode-openrouter]
     # Shares the 1,000/day OpenRouter pool with arm A: skip if A hit the daily cap.
-    if: always() && needs.provider-preflight.outputs.or_b_ok == 'true' && needs.arm-a-opencode-openrouter.outputs.quota_exhausted != 'true'
+    if: always() && inputs.include_arm_b && needs.provider-preflight.outputs.or_b_ok == 'true' && needs.arm-a-opencode-openrouter.outputs.quota_exhausted != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -278,6 +283,7 @@ jobs:
           ARM_B_MODEL: ${{ inputs.arm_b_model }}
           NVIDIA_MODEL: ${{ inputs.nvidia_model }}
           INCLUDE_ARM_A: ${{ inputs.include_arm_a }}
+          INCLUDE_ARM_B: ${{ inputs.include_arm_b }}
           INCLUDE_GEMINI_CLI_ARM: ${{ inputs.include_gemini_cli_arm }}
           INCLUDE_GEMINI_CONTROL: ${{ inputs.include_gemini_control }}
           PREFLIGHT_RESULT: ${{ needs.provider-preflight.result }}

@@ -27,6 +27,7 @@ function missingReason(dir) {
   if (dir === ARMS[0].dir && env.INCLUDE_ARM_A !== "true") return ["excluded_by_input", "include_arm_a was off (retired: dispatch-1 builder verdict)."];
   if (dir === ARMS[0].dir && env.OR_A_OK !== "true") return ["skipped_preflight", "Arm A's OpenRouter model did not pass preflight."];
   if (dir === ARMS[1].dir) {
+    if (env.INCLUDE_ARM_B !== "true") return ["excluded_by_input", "include_arm_b was off (dispatch 5 runs arm C only)."];
     if (env.OR_B_OK !== "true") return ["skipped_preflight", "Arm B's OpenRouter model did not pass preflight."];
     if (env.ARM_A_QUOTA_EXHAUSTED === "true") return ["skipped_quota", "Arm A exhausted the shared OpenRouter daily budget."];
   }
@@ -44,6 +45,7 @@ const ATTRIBUTION = {
   gate_failed: "builder",
   touched_forbidden: "builder",
   builder_no_changes: "unknown",
+  empty_step_after_retry: "unknown",
   builder_timeout: "unknown",
   builder_hung: "unknown",
   builder_request_cap: "unknown",

@@ -233,6 +233,12 @@ main() {
       write_result "quota_exhausted" "none" "$attempt" "Provider daily quota exhausted — stop and resume next day, do not cut this run short. $builder_detail"
       exit 2  # distinct exit code: workflow halts the shared-pool arms, not just this one
     fi
+    # An empty attempt (the provider returned zero output tokens twice for one step) gets the second attempt.
+    if [ "$builder_outcome" = "empty_step_after_retry" ]; then
+      if [ "$attempt" -eq 2 ]; then write_result "$builder_outcome" "none" "$attempt" "$builder_detail"; exit 0; fi
+      fix_block="Your previous attempt ended before finishing. Inspect the current files in src/ and complete the work."
+      attempt=$((attempt + 1)); continue
+    fi
     # Supervisor / timeout verdicts. None of these are retried: a retry would
     # spend another request budget against the same stall (or same provider error).
     case "$builder_outcome" in
@@ -255,6 +261,10 @@ main() {
     changed="$(json_field "$verdict" changed)"
 
     # Builder produced nothing: gates would just fail on the untouched starter and blame the wrong party.
+    if [ "$changed" = "0" ] && [ "$attempt" -eq 1 ] && [ "$BUILDER" = "opencode" ]; then
+      fix_block="Your previous attempt changed no files. Build the app now: write the files the brief requires."
+      attempt=$((attempt + 1)); continue
+    fi
     if [ "$changed" = "0" ]; then
       if [ -n "$rate_limited" ]; then
         write_result "provider_rate_limited" "none" "$attempt" "Builder made no changes; rate limit: $rate_limited"

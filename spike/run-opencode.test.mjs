@@ -22,6 +22,11 @@ else if (mode === "error-hang") { console.log(JSON.stringify({ type: "error", er
 else if (mode === "ratelimit-error") { console.log(JSON.stringify({ type: "error", error: { data: { message: "429 Too Many Requests" } } })); idle(); }
 else if (mode === "loop") setInterval(() => sf("tool-calls"), 20);
 else if (mode === "slow-chatter") setInterval(() => console.log(JSON.stringify({ type: "step_start" })), 50);
+else if (mode === "nvidia1") {
+  const base = JSON.parse(readFileSync(process.env.OPENCODE_CONFIG, "utf-8")).provider["nvidia-paced"].options.baseURL;
+  await fetch(base + "/chat/completions", { method: "POST", body: "{}" }).then((r) => r.text());
+  sf("stop"); idle();
+}
 else if (mode === "nvidia") {
   const base = JSON.parse(readFileSync(process.env.OPENCODE_CONFIG, "utf-8")).provider["nvidia-paced"].options.baseURL;
   for (let i = 0; i < 10; i++) await fetch(base + "/chat/completions", { method: "POST", body: "{}" }).then((r) => r.text());
@@ -78,4 +83,48 @@ test("NVIDIA proxy: 3 consecutive 429s abort as provider_rate_limited, requests 
   assert.equal(r.outcome, "provider_rate_limited");
   assert.equal(hits.length, 3);
   assert.ok(hits[1] - hits[0] >= 120 && hits[2] - hits[1] >= 120, `unpaced: ${hits}`);
+});
+
+// ---- empty-step handling: zero-output 200 is logged raw and retried once ----
+const sse = (...chunks) => chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n";
+const EMPTY = sse({ choices: [{ delta: { role: "assistant" }, finish_reason: null }] }, { choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 900, completion_tokens: 0, total_tokens: 900 } });
+const TOOL = sse({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "bash", arguments: "{}" } }] }, finish_reason: null }] }, { choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { completion_tokens: 12 } });
+
+async function runEmpty(responses) {
+  const hits = [];
+  const up = createServer((req, res) => {
+    hits.push(Date.now());
+    const body = responses[Math.min(hits.length - 1, responses.length - 1)];
+    res.writeHead(200, { "content-type": "text/event-stream", "x-request-id": "rid-" + hits.length }).end(body);
+  });
+  await new Promise((r) => up.listen(0, "127.0.0.1", r));
+  const result = path.join(dir, `r-e-${Math.random()}.json`), log = path.join(dir, `e-${Math.random()}.log`);
+  const child = spawn(process.execPath, [path.resolve("spike/run-opencode.mjs"), "--model", "moonshotai/kimi-k3", "--prompt-file", path.join(dir, "prompt.txt"), "--log", log, "--result", result, "--paced-nvidia"], {
+    env: { ...process.env, OPENCODE_BIN: process.execPath, OPENCODE_BIN_ARGS: JSON.stringify([stub]), STUB_MODE: "nvidia1", PF_NVIDIA_UPSTREAM: `http://127.0.0.1:${up.address().port}`, PF_PACE_MS: "10", PF_SILENCE_MS: "60000", PF_GRACE_MS: "200", NVIDIA_API_KEY: "k" },
+  });
+  await new Promise((r) => child.on("close", r));
+  up.close();
+  let raw = [];
+  try { raw = readFileSync(log.replace(/\.log$/, ".raw-empty.jsonl"), "utf-8").trim().split("\n").map((l) => JSON.parse(l)); } catch {}
+  return { r: JSON.parse(readFileSync(result, "utf-8")), hits: hits.length, raw };
+}
+
+test("empty step: logged raw, retried once, retry recovers -> attempt continues", async () => {
+  const { r, hits, raw } = await runEmpty([EMPTY, TOOL]);
+  assert.equal(hits, 2);
+  assert.equal(raw.length, 1);
+  assert.deepEqual([raw[0].status, raw[0].finish_reason, raw[0].usage.completion_tokens, raw[0].is_retry, raw[0].headers["x-request-id"]], [200, "stop", 0, false, "rid-1"]);
+  assert.match(raw[0].body, /\[DONE\]/);
+  assert.deepEqual([r.empty_steps, r.empty_recovered, r.outcome], [1, 1, "completed"]); // stub then reports its own stop
+});
+test("empty step twice: exactly one retry, then empty_step_after_retry with both raw bodies", async () => {
+  const { r, hits, raw } = await runEmpty([EMPTY]);
+  assert.equal(hits, 2);
+  assert.deepEqual(raw.map((x) => x.is_retry), [false, true]);
+  assert.equal(r.outcome, "empty_step_after_retry");
+  assert.equal(r.proxy_requests, 2);
+});
+test("a non-empty response and an error body are never treated as empty", async () => {
+  assert.equal((await runEmpty([TOOL])).hits, 1);
+  assert.equal((await runEmpty([sse({ error: { message: "boom" } })])).hits, 1);
 });
