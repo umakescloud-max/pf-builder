@@ -61,7 +61,7 @@ if (existsSync(preflightPath)) {
 const table = [
   "# Phase 2 builder spike — results",
   "",
-  `Run date: ${new Date().toISOString().slice(0, 10)}. $0 cost confirmed — all three arms run against free-tier keys only.`,
+  `Run date: ${new Date().toISOString().slice(0, 10)}. Cost: arms use free-tier keys, but $0 is not verified — run 3's preflight made one ~60-token call to a paid OpenRouter model (fallback since removed).`,
   preflightSection,
   header,
   ...rows,

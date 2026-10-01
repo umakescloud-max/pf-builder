@@ -28,6 +28,7 @@ requests="unknown"
 peak_tokens="unknown"
 quota_exhausted=false
 groq_reject=""
+provider_error=""
 
 log() { echo "[$ARM] $*"; }
 
@@ -69,6 +70,12 @@ scan_log() {
   fi
   if grep -qiE 'RESOURCE_EXHAUSTED|429|quota exceeded|rate.?limit exceeded' "$log_file"; then
     quota_exhausted=true
+  fi
+  # Auth / permission / model-not-found are terminal: the builder never did
+  # any work, so running the gates on the untouched starter would report a
+  # meaningless gate failure (run 3, arm 2: two 403s, then "check:static").
+  if grep -qE 'PERMISSION_DENIED|UNAUTHENTICATED|AuthenticationError|NotFoundError|"code": ?(401|403|404)|[Mm]odel .{0,80}(not found|does not exist)|is not found for API version' "$log_file"; then
+    provider_error="$(grep -E 'PERMISSION_DENIED|UNAUTHENTICATED|AuthenticationError|NotFoundError|"code": ?(401|403|404)|[Mm]odel .{0,80}(not found|does not exist)|is not found for API version|"message"' "$log_file" | head -3 | tr '\n' ' ')"
   fi
   if grep -qiE '413|payload too large|tokens per minute|tpm|TPD|tokens per day' "$log_file"; then
     groq_reject="$(grep -iE '413|payload too large|tokens per minute|tpm|TPD|tokens per day' "$log_file" | head -1)"
@@ -161,6 +168,10 @@ main() {
     if [ "$quota_exhausted" = true ]; then
       write_result "quota_exhausted" "none" "$attempt" "Gemini quota exhausted mid-spike — stop and resume next day, do not cut this run short."
       exit 2  # distinct exit code: workflow should halt the whole spike, not just this arm
+    fi
+    if [ -n "$provider_error" ]; then
+      write_result "provider_error" "none" "$attempt" "$provider_error"
+      exit 0
     fi
     if [ -n "$groq_reject" ]; then
       write_result "provider_rejected" "none" "$attempt" "$groq_reject"
