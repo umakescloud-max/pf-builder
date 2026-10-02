@@ -151,6 +151,14 @@ jobs:
         run: |
           chmod +x spike/run-arm.sh
           ./spike/run-arm.sh opencode-openrouter-paid opencode "openrouter/$PAID_MODEL" || [ $? -eq 2 ]
+      - name: Collect evidence into the arm's artifact folder
+        if: always()
+        run: |
+          out=spike/out/opencode-openrouter-paid/evidence
+          mkdir -p "$out"
+          rsync -a --exclude node_modules --exclude dist prototypes/prior-auth-tracker-v1/ "$out/workspace/" || true
+          for d in test-results playwright-report shots; do [ -d "$d" ] && cp -r "$d" "$out/$d"; done
+          true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -350,6 +358,7 @@ jobs:
           ARM_D_HARNESS_ERROR: ${{ needs.arm-d-gemini-cli-openrouter.outputs.harness_error }}
         run: node spike/report.mjs
       - name: Publish results to spike-results branch
+        if: always()
         run: |
           git config user.name "umakescloud-max"
           git config user.email "umakescloud@gmail.com"

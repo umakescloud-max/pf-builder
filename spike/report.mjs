@@ -136,3 +136,6 @@ if (winner) {
   const denial = pngs.find((f) => /denial/i.test(f) && /1280x800/.test(f));
   if (denial) copyFileSync(path.join(winnerDir, denial), "spike/winner-denials.png");
 }
+
+// Red when no arm passed, so a green check means a green gate. The table is already written above.
+process.exitCode = winner ? 0 : 1;

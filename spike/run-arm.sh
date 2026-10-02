@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Phase 2 builder spike — runs one (builder, model) arm end to end:
-# clean copy -> baseline snapshot -> builder (up to 2 attempts, fix-block on
-# retry) -> allowlist check -> typecheck -> build -> check:static -> smoke.
+# clean copy -> baseline snapshot -> builder (2 attempts, +1 if smoke is the
+# failing gate, fix-block on retry) -> allowlist check -> typecheck -> build
+# -> check:static -> smoke.
 # Writes spike/out/<arm>/result.json and copies shots/cover.png next to it.
 #
 # usage: run-arm.sh <arm-id> <aider|opencode|gemini-cli> <model> [nvidia]
@@ -115,7 +116,7 @@ run_builder() {
   local log_file="$OUT_DIR/attempt-$attempt.log"
   local prompt_file="$OUT_DIR/attempt-$attempt-prompt.txt"
   local prompt_text
-  prompt_text="$(cat "$PROMPT")"$'\n\n## Brief\n'"$(cat "$BRIEF")"
+  prompt_text="$(sed "s|<repo-name>|$PROTO_NAME|g" "$PROMPT")"$'\n\n## Brief\n'"$(cat "$BRIEF")"
   if [ -n "$fix_block" ]; then
     prompt_text="$prompt_text"$'\n\n## Fix block (attempt '"$attempt"$')\n'"$fix_block"
   fi
@@ -238,7 +239,7 @@ run_gates() {
   popd >/dev/null
   (cd "$ROOT" && npm run --silent check:static -- "$PROTO_DIR" "$STARTER_DIR") >"$OUT_DIR/gate-check-static.log" 2>&1 || failed="$failed check:static"
   if [ -z "$failed" ]; then
-    (cd "$ROOT" && PROTOTYPE_DIR="$PROTO_DIR" npm run --silent smoke) >"$OUT_DIR/gate-smoke.log" 2>&1 || failed="smoke"
+    (cd "$ROOT" && PROTOTYPE_DIR="$PROTO_DIR" BRIEF_PATH="$BRIEF" npm run --silent smoke) >"$OUT_DIR/gate-smoke.log" 2>&1 || failed="smoke"
   fi
   failed="${failed# }"
   echo "${failed:-pass}"
@@ -263,12 +264,13 @@ main() {
   fi
 
   reset_prototype
-  local attempt=1 fix_block=""
+  local attempt=1 fix_block="" max_attempts=2
 
-  while [ "$attempt" -le 2 ]; do
+  while [ "$attempt" -le "$max_attempts" ]; do
     spend_check "before attempt $attempt" "$((attempt - 1))"
     log "attempt $attempt: running $BUILDER ($MODEL)"
     run_builder "$attempt" "$fix_block"
+    cp -r "$PROTO_DIR/src" "$OUT_DIR/workspace-attempt-$attempt" 2>/dev/null || true
     spend_check "after attempt $attempt" "$attempt"
 
     if [ "$quota_exhausted" = true ]; then
@@ -277,7 +279,7 @@ main() {
     fi
     # An empty attempt (the provider returned zero output tokens twice for one step) gets the second attempt.
     if [ "$builder_outcome" = "empty_step_after_retry" ]; then
-      if [ "$attempt" -eq 2 ]; then write_result "$builder_outcome" "none" "$attempt" "$builder_detail"; exit 0; fi
+      if [ "$attempt" -ge "$max_attempts" ]; then write_result "$builder_outcome" "none" "$attempt" "$builder_detail"; exit 0; fi
       fix_block="Your previous attempt ended before finishing. Inspect the current files in src/ and complete the work."
       attempt=$((attempt + 1)); continue
     fi
@@ -323,7 +325,7 @@ main() {
     fi
 
     if [ -n "$forbidden" ]; then
-      if [ "$attempt" -eq 2 ]; then
+      if [ "$attempt" -ge "$max_attempts" ]; then
         write_result "touched_forbidden" "allowlist" "$attempt" "Builder edited files outside the allowlist: $forbidden"
         exit 0
       fi
@@ -342,7 +344,10 @@ main() {
       exit 0
     fi
 
-    if [ "$attempt" -eq 2 ]; then
+    # Smoke only runs once typecheck/build/check:static are clean. Whoever gets that far earns one more attempt.
+    [ "$gate" = "smoke" ] && max_attempts=3
+
+    if [ "$attempt" -ge "$max_attempts" ]; then
       write_result "gate_failed" "${gate// /,}" "$attempt" "$(all_feedback "$gate")"
       exit 0
     fi

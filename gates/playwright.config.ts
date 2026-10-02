@@ -16,6 +16,7 @@ const PORT = 4321;
 // See DECISIONS.md "Playwright" for the rationale.
 export default defineConfig({
   testDir: ".",
+  outputDir: path.join(__dirname, "..", "test-results"),
   testMatch: /smoke\.spec\.ts/,
   timeout: 60_000,
   retries: 0,
@@ -23,6 +24,7 @@ export default defineConfig({
     baseURL: `http://localhost:${PORT}`,
     channel: process.env.CI ? undefined : "msedge",
     viewport: { width: 1280, height: 800 },
+    screenshot: "only-on-failure",
   },
   webServer: {
     command: `npx vite preview --port ${PORT} --strictPort`,
@@ -31,7 +33,7 @@ export default defineConfig({
     timeout: 30_000,
     reuseExistingServer: !process.env.CI,
   },
-  reporter: [["list"]],
+  reporter: [["list"], ["html", { open: "never", outputFolder: path.join(__dirname, "..", "playwright-report") }]],
 });
 
 export { prototypeDir };
