@@ -26,7 +26,7 @@ STARTER_DIR="$ROOT/archetypes/prior-auth-rcm"
 # pf-engine is not checked out in the CI job, so ../pf-engine paths resolve to
 # nothing (run 4: a 12-byte prompt).
 # ponytail: manual copies, re-copy when either source changes.
-BRIEF="$ROOT/spike/inputs/sample-brief.json"
+BRIEF="$ROOT/${PF_BRIEF_PATH:-spike/inputs/sample-brief.json}"
 PROMPT="$ROOT/spike/inputs/builder.md"
 [ -s "$BRIEF" ] && [ -s "$PROMPT" ] || { echo "missing/empty spike inputs" >&2; exit 3; }
 # The archetype comes from the brief; its Gate Contract addendum (contracts/archetypes/<archetype>/,

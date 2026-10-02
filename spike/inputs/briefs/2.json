@@ -1,0 +1,468 @@
+{
+  "demoable": true,
+  "name_base": "document-triage-queue",
+  "archetype": "prior-auth-rcm",
+  "duplicate_of": null,
+  "title": "Document triage queue with staff approval",
+  "one_liner": "AI sorts incoming patient documents, flags the uncertain ones, and holds every outbound update for staff approval.",
+  "practice": {
+    "name": "Cedarline Care Services",
+    "type": "Multi-site outpatient healthcare services group",
+    "size": "About 45 staff across 3 sites, regional operations team of 6"
+  },
+  "persona": {
+    "name": "Dana Okafor",
+    "role": "Patient operations coordinator",
+    "day_in_the_life": "Dana starts at 7:45 am with about 62 documents that arrived overnight by fax, secure email and the patient portal. For each one she opens the file, works out who the patient is, picks the document type (referral, lab result, insurance card, consent form, records request), searches the shared SOP folder for the routing rule, and forwards it to Intake, Billing, Clinical review, Records or Scheduling. She repeats this about 75 times a day, at roughly 2.5 minutes each. Around 11 am she is still sorting while front-desk staff ask where a referral went. At 3 pm she re-checks the day's forwards because a few usually land with the wrong team."
+  },
+  "problem": {
+    "current_workflow": "Documents land in three separate inboxes. Coordinators identify the patient by hand in the CRM-style record system, look up routing rules in scattered SOP documents and forms, then forward each file by email or create a task manually. Nothing records why a document went to a given team.",
+    "pain_points": [
+      "Every document is opened and read by a person before it can be routed",
+      "Routing rules live in SOPs that are hard to search and often out of date",
+      "Patients with common names are matched by guesswork, and the wrong-chart risk is real",
+      "Misrouted documents are found days later, when a patient calls to ask about a referral",
+      "No record shows who routed what, or which rule was used"
+    ],
+    "cost_of_pain": "About 31 coordinator hours per week spent on manual sorting, plus roughly 8 misrouted documents per week that delay patient follow-up by about 2 days each."
+  },
+  "story": {
+    "before": "Dana opens 62 overnight documents one by one. By 9:30 she has routed 30 and spent 20 minutes hunting for the rule on outside lab results. A fax for Jordan Ellis matches two charts, so she guesses from the phone number and forwards it. Two days later Intake reports they never got the referral, and she finishes sorting at 10:50.",
+    "after": "At 7:45 the same 62 documents are already sorted: 54 are routed to the right team with the SOP rule cited, 5 wait in the approval queue, and 3 sit in exceptions. The Jordan Ellis fax is flagged as two possible patient matches. Dana attaches the signed referral cover sheet, which shows the date of birth. She sends it to approval and finishes the whole morning review by 8:30."
+  },
+  "edge_case": {
+    "scenario": "Referral fax 4471 arrives from an outside primary care office with a cover sheet that has no date of birth. The patient name, Jordan Ellis, matches two existing records, one aged 41 and one aged 77. The system's confidence is only 0.52, so it will not pick a chart on its own.",
+    "how_handled": "The document goes to the exceptions queue with both candidate charts shown in the drawer. Dana attaches the signed referral page that carries the date of birth, confirms the correct chart, and sends the item to the approval queue. Nothing reaches the record system until a second review step approves it.",
+    "screen_id": "exceptions",
+    "record_id": "4471",
+    "label": "Two possible patient matches"
+  },
+  "human_checkpoint": {
+    "where": "Approval queue, before any record update, task or patient acknowledgement is sent",
+    "what_staff_does": "Dana reads the proposed team, the proposed record update and the draft patient acknowledgement, edits the wording if needed, then approves it so the item is routed.",
+    "screen_id": "approvals"
+  },
+  "named_tools": [
+    "OpenAI",
+    "Claude",
+    "PostgreSQL",
+    "Supabase"
+  ],
+  "metrics": [
+    {
+      "label": "Documents routed without staff touch",
+      "computed_from": "Count of documents with status Routed and routed_by = AI, divided by all documents received in the last 7 days"
+    },
+    {
+      "label": "Median minutes from arrival to routed",
+      "computed_from": "Median of (routed_at minus received_at) across documents with status Routed"
+    },
+    {
+      "label": "Open exceptions",
+      "computed_from": "Count of exception records with resolved = false"
+    },
+    {
+      "label": "Awaiting approval",
+      "computed_from": "Count of approval items with status = pending, plus the oldest drafted_at converted to hours waiting"
+    }
+  ],
+  "screens": [
+    {
+      "id": "story",
+      "route": "/",
+      "name": "The morning backlog",
+      "purpose": "Introduce Dana, the overnight document backlog and the before and after of her morning.",
+      "components": [
+        "StoryPanel",
+        "ConceptBadge"
+      ],
+      "actions": [
+        {
+          "label": "Start the walkthrough",
+          "effect": "Navigates to the document queue and starts the guided tour.",
+          "toast": "Opened the document queue",
+          "kind": "nav",
+          "target_screen_id": "document-queue"
+        }
+      ]
+    },
+    {
+      "id": "document-queue",
+      "route": "/queue",
+      "name": "Document queue",
+      "purpose": "All incoming documents with type, channel, patient, routed team, status and AI confidence, so Dana can see what has been sorted and what has not.",
+      "components": [
+        "MetricPanel",
+        "StatTile",
+        "DataTable",
+        "StatusPill"
+      ],
+      "actions": [
+        {
+          "label": "Open document",
+          "effect": "Clicking a row opens the document detail screen for that document.",
+          "toast": "Opened document from the queue",
+          "kind": "row-click",
+          "target_screen_id": "document-detail",
+          "role": "open-case"
+        },
+        {
+          "label": "Review exceptions",
+          "effect": "Navigates to the exceptions queue.",
+          "toast": "Opened the exceptions queue",
+          "kind": "nav",
+          "target_screen_id": "exceptions"
+        }
+      ]
+    },
+    {
+      "id": "document-detail",
+      "route": "/document",
+      "name": "Document detail",
+      "purpose": "One document with its viewer, the AI's routing reasoning, the SOP it cited, the history of what has happened, and staff notes.",
+      "components": [
+        "DocumentViewer",
+        "Timeline",
+        "StatusPill",
+        "NoteEditor",
+        "AuditLog"
+      ],
+      "actions": [
+        {
+          "label": "Add note",
+          "effect": "Saves the typed note to the document timeline with the current user and a relative timestamp.",
+          "toast": "Added note to the document",
+          "kind": "button",
+          "role": "add-note"
+        },
+        {
+          "label": "Back to queue",
+          "effect": "Navigates to the document queue.",
+          "toast": "Returned to the document queue",
+          "kind": "nav",
+          "target_screen_id": "document-queue"
+        }
+      ]
+    },
+    {
+      "id": "exceptions",
+      "route": "/exceptions",
+      "name": "Exceptions",
+      "purpose": "Documents the system would not route on its own, each with the reason, a confidence score and the evidence staff need to resolve it.",
+      "components": [
+        "ScenarioBanner",
+        "DataTable",
+        "RecordDrawer",
+        "StatusPill"
+      ],
+      "actions": [
+        {
+          "label": "Attach supporting document",
+          "effect": "Opens a small picker of 3 sample files. Choosing the signed referral page adds it to the open drawer as match evidence showing the date of birth.",
+          "toast": "Attached supporting document to the exception",
+          "kind": "button",
+          "role": "attach-document"
+        },
+        {
+          "label": "Send to approval",
+          "effect": "Moves the selected exception to the approval queue with a proposed team, record update and draft acknowledgement. Its status changes to Awaiting approval.",
+          "toast": "Sent exception to the approval queue",
+          "kind": "button",
+          "role": "move-to-appeals"
+        }
+      ]
+    },
+    {
+      "id": "approvals",
+      "route": "/approvals",
+      "name": "Approvals",
+      "purpose": "The human checkpoint. Every proposed routing, record update and patient acknowledgement waits here until staff approve it.",
+      "components": [
+        "ApprovalQueue",
+        "AuditLog"
+      ],
+      "actions": [
+        {
+          "label": "Approve and route",
+          "effect": "Marks the selected item approved, removes it from the queue, sets the document to Routed in the queue, and adds a sent record update to the audit log.",
+          "toast": "Approved item and routed the document",
+          "kind": "button",
+          "role": "submit-appeal"
+        }
+      ]
+    },
+    {
+      "id": "architecture",
+      "route": "/architecture",
+      "name": "How it would be built",
+      "purpose": "Show the planned components, the data flow and the design choices for privacy and auditing.",
+      "components": [
+        "ArchitectureView",
+        "IntegrationTiles"
+      ],
+      "actions": []
+    }
+  ],
+  "roles": {
+    "tracker": "document-queue",
+    "case": "document-detail",
+    "denials": "exceptions",
+    "appeals": "approvals"
+  },
+  "seed_data": {
+    "entities": [
+      {
+        "name": "documents",
+        "count": 120,
+        "fields": [
+          "id",
+          "received_at",
+          "channel",
+          "doc_type",
+          "patient_name",
+          "ai_confidence",
+          "routed_team",
+          "routed_by",
+          "status",
+          "routed_at",
+          "cited_sop",
+          "summary"
+        ],
+        "realism_notes": "Ids run 4380 to 4499, with each id carried in the tracker row id. Received_at is spread over the last 7 days by relative offset, with 62 arriving in the last 12 hours. Channels: about 45% fax, 30% secure email, 20% portal upload, 5% scanned mail. Doc types: referral 28%, lab result 24%, insurance card 14%, consent form 12%, records request 12%, discharge summary 10%. Statuses: 102 Routed (85%), 5 Awaiting approval, 4 Received (just arrived, still processing), 9 Needs review. Routed documents have ai_confidence from 0.82 to 0.99, and routed_at is 1 to 6 minutes after received_at. Routed_team: Intake, Billing, Clinical review, Records, Scheduling. Document 4471 is a referral received 5 hours ago by fax for patient Jordan Ellis, status Needs review, ai_confidence 0.52, routed_team empty. Patient names are fictional."
+      },
+      {
+        "name": "exceptions",
+        "count": 9,
+        "fields": [
+          "document_id",
+          "reason",
+          "ai_confidence",
+          "candidate_matches",
+          "suggested_action",
+          "age_hours",
+          "resolved"
+        ],
+        "realism_notes": "Nine open exceptions, one for each Needs review document. Reasons: Illegible scan (2), Missing referring provider (2), No matching SOP (2), Unsupported file type (2), and Two possible patient matches (exactly 1, document 4471). The exception for 4471 lists two candidate charts: Jordan Ellis aged 41 (active, last visit 3 weeks ago) and Jordan Ellis aged 77 (active, last visit 5 months ago). Its suggested_action is 'Attach a document showing date of birth', age_hours is 5, and the signed referral page is one of the 3 sample attachments with a date of birth that matches the 41-year-old. Other exceptions have ages from 1 to 22 hours. All have resolved = false."
+      },
+      {
+        "name": "approval_items",
+        "count": 5,
+        "fields": [
+          "document_id",
+          "proposed_team",
+          "proposed_record_update",
+          "draft_patient_message",
+          "cited_sop",
+          "drafted_at",
+          "status"
+        ],
+        "realism_notes": "Five pending items drafted between 20 minutes and 4 hours ago. Each cites a real-sounding SOP title such as 'Outside referral intake steps' or 'Insurance card update procedure'. Draft patient messages are 1 or 2 plain sentences, such as confirming a referral was received, with no clinical advice. Document 4471 is not here at the start; it appears after Send to approval is clicked. Approving an item sets status to approved."
+      },
+      {
+        "name": "knowledge_sources",
+        "count": 24,
+        "fields": [
+          "title",
+          "type",
+          "owner_team",
+          "last_reviewed",
+          "times_cited_this_week"
+        ],
+        "realism_notes": "Types: SOP (14), form (6), service guideline (4). Last_reviewed ranges from 5 days to 14 months ago, and 3 sources are over 12 months old and shown as 'review due'. Citation counts are skewed, with a few SOPs cited 20 or more times and many cited 0 to 3 times."
+      },
+      {
+        "name": "audit_events",
+        "count": 60,
+        "fields": [
+          "timestamp",
+          "actor",
+          "action",
+          "document_id",
+          "detail"
+        ],
+        "realism_notes": "Actors are 'Triage agent' (about 80%) and 4 fictional staff names. Actions: classified, matched patient, routed, flagged exception, note added, approved. Timestamps are relative offsets over the last 24 hours, newest first. Every routed document has at least one classified event and one routed event."
+      }
+    ]
+  },
+  "tour": [
+    {
+      "id": "meet-dana",
+      "title": "Meet Dana",
+      "body": "Every morning Dana sorts dozens of faxes, emails and uploads by hand. This demo shows the same morning with AI doing the first pass and staff keeping control.",
+      "target": "story-panel",
+      "screen_id": "story"
+    },
+    {
+      "id": "sorted-queue",
+      "title": "A queue that is already sorted",
+      "body": "Each overnight document is already identified, typed and sent to a team. The confidence column shows how sure the system was, so Dana knows where to look.",
+      "target": "tracker-table",
+      "screen_id": "document-queue"
+    },
+    {
+      "id": "document-detail",
+      "title": "See why it was routed",
+      "body": "Open any document to see the file, the team it was sent to, and the SOP the system cited. Notes and history stay on the record.",
+      "target": "document-viewer",
+      "screen_id": "document-detail"
+    },
+    {
+      "id": "edge-case-row",
+      "title": "Two charts match",
+      "body": "This referral fax names Jordan Ellis, and two charts match. Confidence is 0.52, so the system stops and asks a person instead of guessing.",
+      "target": "denial-row-4471",
+      "screen_id": "exceptions"
+    },
+    {
+      "id": "attach-evidence",
+      "title": "Attach the evidence",
+      "body": "Dana attaches the signed referral page, which shows the date of birth. That settles which chart is correct, and she sends the item to approval.",
+      "target": "attach-document-button",
+      "screen_id": "exceptions"
+    },
+    {
+      "id": "human-approval",
+      "title": "Staff approve first",
+      "body": "Nothing is sent to the record system or to a patient until staff approve it. Dana reads the proposed team, update and message, then approves.",
+      "target": "approval-queue",
+      "screen_id": "approvals"
+    },
+    {
+      "id": "queue-metrics",
+      "title": "Numbers from the live queue",
+      "body": "Most documents are routed without a touch and exceptions stay small. These numbers update from the queue so the team can see where time is going.",
+      "target": "metric-panel",
+      "screen_id": "document-queue"
+    },
+    {
+      "id": "how-built",
+      "title": "How it would be built",
+      "body": "Intake feeds a triage agent that retrieves SOPs from a knowledge base, calls a model with a fallback, and logs every step. Writes to the CRM-style system need staff approval.",
+      "target": "architecture-view",
+      "screen_id": "architecture"
+    }
+  ],
+  "architecture": {
+    "nodes": [
+      {
+        "id": "ui",
+        "label": "Prototype UI",
+        "kind": "ui"
+      },
+      {
+        "id": "intake",
+        "label": "Document intake (fax, email, portal)",
+        "kind": "source"
+      },
+      {
+        "id": "agent",
+        "label": "Triage agent",
+        "kind": "service"
+      },
+      {
+        "id": "claude",
+        "label": "Claude",
+        "kind": "model"
+      },
+      {
+        "id": "openai",
+        "label": "OpenAI (fallback model)",
+        "kind": "model"
+      },
+      {
+        "id": "kb",
+        "label": "Knowledge base: policies, SOPs, forms",
+        "kind": "store"
+      },
+      {
+        "id": "db",
+        "label": "PostgreSQL",
+        "kind": "store"
+      },
+      {
+        "id": "auth",
+        "label": "Supabase (auth and permissions)",
+        "kind": "service"
+      },
+      {
+        "id": "crm",
+        "label": "Internal CRM-style system",
+        "kind": "external"
+      },
+      {
+        "id": "audit",
+        "label": "Audit log",
+        "kind": "store"
+      }
+    ],
+    "edges": [
+      {
+        "from": "intake",
+        "to": "agent",
+        "label": "New documents"
+      },
+      {
+        "from": "agent",
+        "to": "kb",
+        "label": "Retrieve matching SOPs"
+      },
+      {
+        "from": "agent",
+        "to": "claude",
+        "label": "Classify and propose route"
+      },
+      {
+        "from": "agent",
+        "to": "openai",
+        "label": "Fallback if primary fails"
+      },
+      {
+        "from": "agent",
+        "to": "db",
+        "label": "Save results and confidence"
+      },
+      {
+        "from": "db",
+        "to": "ui",
+        "label": "Queue, exceptions, approvals"
+      },
+      {
+        "from": "auth",
+        "to": "ui",
+        "label": "Role-based access"
+      },
+      {
+        "from": "ui",
+        "to": "crm",
+        "label": "Approved updates only"
+      },
+      {
+        "from": "agent",
+        "to": "audit",
+        "label": "Log every step"
+      },
+      {
+        "from": "ui",
+        "to": "audit",
+        "label": "Log staff actions"
+      }
+    ],
+    "compliance_notes": [
+      "Patient data would be stored encrypted at rest and in transit",
+      "PHI would not be sent to any model without a signed BAA in place",
+      "Staff access would be limited by role, following minimum-necessary principles",
+      "Every system and staff action would be written to an audit log with a timestamp and actor",
+      "The system would not write to the record system without staff approval",
+      "Low-confidence results go to a person instead of being routed automatically"
+    ]
+  },
+  "design": {
+    "palette": "harbor-teal-gold",
+    "typefaces": {
+      "heading": "Figtree",
+      "body": "Public Sans"
+    },
+    "rationale": "A calm teal and gold palette with clear sans-serif type suits a busy operations desk and avoids the templated look of generic blue dashboards."
+  },
+  "voice_demo": null
+}

@@ -47,6 +47,10 @@ on:
         description: "Retired: Aider x Gemini control (20 req/day, spent, answers nothing)."
         type: boolean
         default: false
+      brief_path:
+        description: "Brief the builder implements, relative to the repo root."
+        type: string
+        default: "spike/inputs/sample-brief.json"
 
 permissions:
   contents: write
@@ -64,6 +68,7 @@ env:
   OPENCODE_VERSION: "1.18.31"
   AIDER_VERSION: "0.86.2"
   PAID_MODEL: ${{ inputs.paid_model }}
+  PF_BRIEF_PATH: ${{ inputs.brief_path }}
   # Hard spend ceiling for the whole dispatch, USD, checked against OpenRouter /key (spike/spend.mjs). Not an input on purpose.
   PF_SPEND_CEILING: "2.00"
   ARM_A_MODEL: ${{ inputs.arm_a_model }}
