@@ -1,0 +1,32 @@
+{
+  "archetype": "prior-auth-rcm",
+  "screen_roles": {
+    "tracker": { "required_components": ["DataTable"] },
+    "case": { "required_components": [] },
+    "denials": { "required_components": ["DataTable", "RecordDrawer"] },
+    "appeals": { "required_components": ["ApprovalQueue"] }
+  },
+  "edge_case_role": "denials",
+  "human_checkpoint_role": "appeals",
+  "action_roles": {
+    "tracker": {
+      "open-case": { "kind": "row-click", "target_screen_role": "case" }
+    },
+    "case": {
+      "add-note": { "kind": "button" }
+    },
+    "denials": {
+      "attach-document": { "kind": "button" },
+      "move-to-appeals": { "kind": "button" }
+    },
+    "appeals": {
+      "submit-appeal": { "kind": "button" }
+    }
+  },
+  "row_click_components": ["DataTable"],
+  "row_id_prefix": {
+    "tracker": "tracker-table-row-",
+    "denials": "denial-row-"
+  },
+  "detail_query_param": "case"
+}

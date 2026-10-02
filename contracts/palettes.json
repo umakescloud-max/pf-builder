@@ -1,0 +1,37 @@
+{
+  "clinical-green-amber": {
+    "surface": "#F4F6F3",
+    "ink": "#1F2A24",
+    "primary": "#2F5D50",
+    "accent": "#C98A2C",
+    "muted": "#5E6B64"
+  },
+  "harbor-teal-gold": {
+    "surface": "#F2F6F7",
+    "ink": "#1A2B30",
+    "primary": "#1F5F6B",
+    "accent": "#D9A83F",
+    "muted": "#53666C"
+  },
+  "berry-plum-blush": {
+    "surface": "#F8F3F6",
+    "ink": "#2A1F2B",
+    "primary": "#6B2D5C",
+    "accent": "#E0A3C0",
+    "muted": "#6A5868"
+  },
+  "moss-olive-citrine": {
+    "surface": "#F5F6EE",
+    "ink": "#232A16",
+    "primary": "#4A5D23",
+    "accent": "#D4B83A",
+    "muted": "#5C6446"
+  },
+  "slate-indigo-peach": {
+    "surface": "#F4F4F9",
+    "ink": "#1E1F3B",
+    "primary": "#3B3F8F",
+    "accent": "#F2B38C",
+    "muted": "#5A5D78"
+  }
+}

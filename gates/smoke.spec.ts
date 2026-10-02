@@ -16,38 +16,79 @@ const prototypeDir = process.env.PROTOTYPE_DIR
 
 const tour: TourStep[] = JSON.parse(readFileSync(path.join(prototypeDir, "src", "tour.json"), "utf-8"));
 
-// The brief is the single source of truth for routes, action labels and toast
-// text. Nothing below is hand-typed against it. run-arm.sh passes BRIEF_PATH.
-interface BriefAction { label: string; effect: string }
+// The brief and the archetype contract are the single source of truth for
+// screens, roles, action labels, toast text and row ids. Nothing below is
+// hand-typed against them. run-arm.sh passes BRIEF_PATH; the contract is
+// contracts/archetypes/<brief.archetype>/roles.json (shared with validate-brief
+// and the builder prompt).
+interface BriefAction { label: string; toast: string; kind: string; role?: string }
 interface BriefScreen { id: string; route: string; actions: BriefAction[] }
+interface RolesContract {
+  edge_case_role: string;
+  human_checkpoint_role: string;
+  action_roles: Record<string, Record<string, { kind: string }>>;
+  row_id_prefix: Record<string, string>;
+  detail_query_param: string;
+}
+const pfBuilderRoot = path.resolve(__dirname, "..");
 const briefPath = process.env.BRIEF_PATH
   ? path.resolve(process.env.BRIEF_PATH)
-  : path.resolve(__dirname, "..", "spike", "inputs", "sample-brief.json");
+  : path.join(pfBuilderRoot, "spike", "inputs", "sample-brief.json");
 const brief = JSON.parse(readFileSync(briefPath, "utf-8"));
-const screen = (id: string): BriefScreen => {
-  const s = (brief.screens as BriefScreen[]).find((x) => x.id === id);
-  if (!s) throw new Error(`brief has no screen "${id}"`);
-  return s;
+
+// A role or action that cannot be resolved is a brief/contract problem, not a
+// builder problem: say exactly which one, never a bare TypeError.
+function fail(msg: string): never {
+  throw new Error(`smoke gate: ${msg} (brief ${briefPath})`);
+}
+const contractPath = path.join(pfBuilderRoot, "contracts", "archetypes", String(brief.archetype), "roles.json");
+let contract: RolesContract;
+try {
+  contract = JSON.parse(readFileSync(contractPath, "utf-8"));
+} catch (e) {
+  fail(`no readable archetype contract for brief.archetype "${brief.archetype}" at ${contractPath}: ${(e as Error).message}`);
+}
+const screenById = (id: string): BriefScreen =>
+  (brief.screens as BriefScreen[] | undefined)?.find((s) => s.id === id) ?? fail(`brief has no screen "${id}"`);
+const screenByRole = (role: string): BriefScreen =>
+  screenById(brief.roles?.[role] ?? fail(`brief.roles has no role "${role}"`));
+// An action is found by its role (brief screen holding the screen role, then the
+// action carrying the action role) and must have the kind the contract fixes.
+const actionByRole = (screenRole: string, actionRole: string): BriefAction => {
+  const want = contract.action_roles?.[screenRole]?.[actionRole] ?? fail(`contract has no action role "${actionRole}" on screen role "${screenRole}"`);
+  const screen = screenByRole(screenRole);
+  const a = screen.actions.find((x) => x.role === actionRole) ?? fail(`screen "${screen.id}" (role ${screenRole}) has no action with role "${actionRole}"`);
+  if (a.kind !== want.kind) fail(`action "${a.label}" (role ${actionRole}) has kind "${a.kind}", the contract needs "${want.kind}"`);
+  return a;
 };
-const label = (screenId: string, actionLabel: string): string => {
-  const a = screen(screenId).actions.find((x) => x.label === actionLabel);
-  if (!a) throw new Error(`brief screen "${screenId}" has no action "${actionLabel}"`);
-  return a.label;
+// Accessible name of a kind:"button" action. Row-click and nav actions are not buttons.
+const buttonName = (screenRole: string, actionRole: string): string => {
+  const a = actionByRole(screenRole, actionRole);
+  return a.kind === "button" ? a.label : fail(`action "${a.label}" (role ${actionRole}) is kind "${a.kind}", not a button`);
 };
-const effect = (screenId: string, actionLabel: string): string => {
-  const a = screen(screenId).actions.find((x) => x.label === actionLabel);
-  if (!a) throw new Error(`brief screen "${screenId}" has no action "${actionLabel}"`);
-  return a.effect;
-};
-const edgeRoute = screen(brief.edge_case.screen_id).route;
-// Assumes brief.edge_case.scenario names the case as "#<digits>" and quotes the
-// denial reason in single quotes, e.g. "Case #4471 (...) denied with reason code 'missing clinical documentation'".
-const edgeIdMatch = /#(\d+)/.exec(brief.edge_case.scenario);
-if (!edgeIdMatch) throw new Error(`edge_case.scenario has no "#<id>": ${brief.edge_case.scenario}`);
-const edgeCaseId = edgeIdMatch[1];
-const denialMatch = /'([^']+)'/.exec(brief.edge_case.scenario);
-if (!denialMatch) throw new Error(`edge_case.scenario has no 'quoted denial reason': ${brief.edge_case.scenario}`);
-const denialReason = denialMatch[1];
+const toastText = (screenRole: string, actionRole: string): string => actionByRole(screenRole, actionRole).toast;
+const rowId = (screenRole: string, recordId: string): string =>
+  `${contract.row_id_prefix?.[screenRole] ?? fail(`contract has no row_id_prefix for screen role "${screenRole}"`)}${recordId}`;
+
+// The prior-auth flow, by role. Role names come from roles.json; nothing here is a
+// screen id, action label or row-id prefix.
+const LIST = "tracker";
+const DETAIL = "case";
+const EDGE = contract.edge_case_role;
+const CHECKPOINT = contract.human_checkpoint_role;
+const detailParam = contract.detail_query_param ?? fail("contract has no detail_query_param");
+
+const edgeScreen = screenById(brief.edge_case.screen_id);
+if (edgeScreen.id !== brief.roles?.[EDGE]) {
+  fail(`edge_case.screen_id "${edgeScreen.id}" is not the screen with role "${EDGE}" ("${brief.roles?.[EDGE]}")`);
+}
+const edgeRoute = edgeScreen.route;
+const edgeCaseId: string = brief.edge_case.record_id ?? fail("brief.edge_case.record_id is missing");
+const denialReason: string = brief.edge_case.label ?? fail("brief.edge_case.label is missing");
+const checkpointScreen = screenById(brief.human_checkpoint.screen_id);
+if (checkpointScreen.id !== brief.roles?.[CHECKPOINT]) {
+  fail(`human_checkpoint.screen_id "${checkpointScreen.id}" is not the screen with role "${CHECKPOINT}" ("${brief.roles?.[CHECKPOINT]}")`);
+}
 
 const SHOTS_DIR = path.join(__dirname, "..", "shots");
 mkdirSync(SHOTS_DIR, { recursive: true });
@@ -159,19 +200,19 @@ test.describe("smoke", () => {
     const edgeCaseRowAfterReload = page.locator('[data-edge-case="true"]');
     await expect(edgeCaseRowAfterReload).toHaveText(rowTextBefore); // nothing moves on its own
 
-    // Only Dana's explicit actions change it: attach the document, move it
-    // to appeals, then the human-checkpoint action (Submit appeal).
+    // Only the user's explicit actions change it: attach the document, move it
+    // to appeals, then the human-checkpoint action (submit-appeal).
     await edgeCaseRowAfterReload.click();
-    await page.getByRole("button", { name: label("denials", "Attach missing document") }).click();
-    await page.getByRole("button", { name: label("denials", "Move to appeals") }).click();
+    await page.getByRole("button", { name: buttonName(EDGE, "attach-document") }).click();
+    await page.getByRole("button", { name: buttonName(EDGE, "move-to-appeals") }).click();
 
     // In-app navigation (not page.goto) so the SPA's in-memory case state
     // carries over, exactly as it would for a real visitor.
-    await page.locator(`a[href="#${screen("appeals").route}"]`).click();
+    await page.locator(`a[href="#${checkpointScreen.route}"]`).click();
     const edgeCaseItem = page.locator('[data-edge-case="true"]');
     await expect(edgeCaseItem).toBeVisible();
-    await edgeCaseItem.getByRole("button", { name: label("appeals", "Submit appeal") }).click();
-    await expect(page.getByTestId("toast").filter({ hasText: effect("appeals", "Submit appeal") })).toBeVisible({
+    await edgeCaseItem.getByRole("button", { name: buttonName(CHECKPOINT, "submit-appeal") }).click();
+    await expect(page.getByTestId("toast").filter({ hasText: toastText(CHECKPOINT, "submit-appeal") })).toBeVisible({
       timeout: 1_500,
     });
   });
@@ -179,40 +220,40 @@ test.describe("smoke", () => {
   test("every non-nav action produces a toast or navigation within 1.5s", async ({ page }) => {
     await seedLoginAndTour(page);
 
-    // Tracker: "Open case" (row click) navigates to /case.
-    await page.goto(`/#${screen("tracker").route}`);
+    // List screen: the open-case row click navigates to the detail screen.
+    await page.goto(`/#${screenByRole(LIST).route}`);
     await page.screenshot({ path: path.join(SHOTS_DIR, "actions-tracker-initial.png") });
-    await page.locator(`[data-tour="tracker-table-row-${edgeCaseId}"]`).click();
-    await expect(page).toHaveURL(new RegExp(`#${screen("case").route}\\?case=${edgeCaseId}`), { timeout: 1_500 });
+    await page.locator(`[data-tour="${rowId(LIST, edgeCaseId)}"]`).click();
+    await expect(page).toHaveURL(new RegExp(`#${screenByRole(DETAIL).route}\\?${detailParam}=${edgeCaseId}`), { timeout: 1_500 });
 
-    // Case: "Add note" produces a toast.
-    await page.goto(`/#${screen("case").route}?case=${edgeCaseId}`);
-    await page.getByRole("button", { name: label("case", "Add note") }).click();
-    await expect(page.getByTestId("toast").filter({ hasText: effect("case", "Add note") })).toBeVisible({
+    // Detail screen: the add-note button produces a toast.
+    await page.goto(`/#${screenByRole(DETAIL).route}?${detailParam}=${edgeCaseId}`);
+    await page.getByRole("button", { name: buttonName(DETAIL, "add-note") }).click();
+    await expect(page.getByTestId("toast").filter({ hasText: toastText(DETAIL, "add-note") })).toBeVisible({
       timeout: 1_500,
     });
 
-    // Denials: Dana attaches the missing document and moves the case into the
+    // Edge screen: the user attaches the document and moves the case into the
     // appeals queue herself — nothing happens automatically.
-    await page.goto(`/#${screen("denials").route}`);
+    await page.goto(`/#${screenByRole(EDGE).route}`);
     await page.screenshot({ path: path.join(SHOTS_DIR, "actions-denials-initial.png") });
-    await page.locator(`[data-tour="denial-row-${edgeCaseId}"]`).click();
-    await page.getByRole("button", { name: label("denials", "Attach missing document") }).click();
-    await expect(page.getByTestId("toast").filter({ hasText: effect("denials", "Attach missing document") })).toBeVisible({
+    await page.locator(`[data-tour="${rowId(EDGE, edgeCaseId)}"]`).click();
+    await page.getByRole("button", { name: buttonName(EDGE, "attach-document") }).click();
+    await expect(page.getByTestId("toast").filter({ hasText: toastText(EDGE, "attach-document") })).toBeVisible({
       timeout: 1_500,
     });
-    await page.getByRole("button", { name: label("denials", "Move to appeals") }).click();
-    await expect(page.getByTestId("toast").filter({ hasText: effect("denials", "Move to appeals") })).toBeVisible({
+    await page.getByRole("button", { name: buttonName(EDGE, "move-to-appeals") }).click();
+    await expect(page.getByTestId("toast").filter({ hasText: toastText(EDGE, "move-to-appeals") })).toBeVisible({
       timeout: 1_500,
     });
 
-    // Appeals: Dana reviews and submits the appeal — the human checkpoint.
+    // Checkpoint screen: the user reviews and submits — the human checkpoint.
     // In-app navigation (not page.goto) so the SPA's in-memory case state
     // carries over, exactly as it would for a real visitor.
-    await page.locator(`a[href="#${screen("appeals").route}"]`).click();
+    await page.locator(`a[href="#${checkpointScreen.route}"]`).click();
     const edgeCaseItem = page.locator('[data-edge-case="true"]');
-    await edgeCaseItem.getByRole("button", { name: label("appeals", "Submit appeal") }).click();
-    await expect(page.getByTestId("toast").filter({ hasText: effect("appeals", "Submit appeal") })).toBeVisible({
+    await edgeCaseItem.getByRole("button", { name: buttonName(CHECKPOINT, "submit-appeal") }).click();
+    await expect(page.getByTestId("toast").filter({ hasText: toastText(CHECKPOINT, "submit-appeal") })).toBeVisible({
       timeout: 1_500,
     });
   });

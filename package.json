@@ -10,7 +10,8 @@
   "scripts": {
     "check:static": "tsx gates/check-static.ts",
     "theme:gen": "tsx gates/theme-gen.ts",
-    "smoke": "playwright test -c gates/playwright.config.ts"
+    "smoke": "playwright test -c gates/playwright.config.ts",
+    "palettes:verify": "tsx gates/theme-gen.ts --presets"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.2",

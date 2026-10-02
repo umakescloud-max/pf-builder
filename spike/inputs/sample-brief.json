@@ -32,7 +32,9 @@
   "edge_case": {
     "scenario": "Case #4471 (Meridian Health Partners, lumbar spine MRI, patient J. Alvarez) is denied with reason code 'missing clinical documentation' — the referring physician's progress note wasn't attached to the original submission.",
     "how_handled": "The case appears in the Denials screen flagged red with the specific missing item named and a live countdown (computed from decision_date and appeal_deadline, never a written-in number) to the appeal deadline. Dana attaches the missing document and moves the case into the Appeals queue herself; nothing moves automatically.",
-    "screen_id": "denials"
+    "screen_id": "denials",
+    "record_id": "4471",
+    "label": "missing clinical documentation"
   },
   "human_checkpoint": {
     "where": "Appeals queue",
@@ -46,6 +48,12 @@
     { "label": "Denial rate", "computed_from": "Count of cases where status equals denied, divided by count of cases where status is approved or denied, last 30 days by decision_date" },
     { "label": "Appeals won", "computed_from": "Count of denied cases where appeal_status equals won" }
   ],
+  "roles": {
+    "tracker": "tracker",
+    "case": "case",
+    "denials": "denials",
+    "appeals": "appeals"
+  },
   "screens": [
     {
       "id": "story",
@@ -54,7 +62,7 @@
       "purpose": "Introduce Dana, the practice, and the before/after of her morning.",
       "components": ["AppShell", "ConceptBadge", "StoryPanel", "TourRunner"],
       "actions": [
-        { "label": "Start the tour", "effect": "Begins the guided tour from the auth tracker screen" }
+        { "label": "Start the tour", "effect": "Begins the guided tour from the auth tracker screen", "toast": "Begins the guided tour from the auth tracker screen", "kind": "button" }
       ]
     },
     {
@@ -64,8 +72,8 @@
       "purpose": "Single list of all open and recent prior auth cases across payers, with days-to-SLA.",
       "components": ["AppShell", "DataTable", "StatusPill", "MetricPanel", "RecordDrawer"],
       "actions": [
-        { "label": "Open case", "effect": "Opens case #4471 on the Case screen" },
-        { "label": "Filter by payer", "effect": "Narrows the list to the selected payer" }
+        { "label": "Open case", "effect": "Opens case #4471 on the Case screen", "toast": "Opens case #4471 on the Case screen", "kind": "row-click", "role": "open-case", "target_screen_id": "case" },
+        { "label": "Filter by payer", "effect": "Narrows the list to the selected payer", "toast": "Narrows the list to the selected payer", "kind": "button" }
       ]
     },
     {
@@ -75,7 +83,7 @@
       "purpose": "Full history and document set for the selected prior auth case, defaulting to #4471.",
       "components": ["AppShell", "Timeline", "DocumentViewer", "StatusPill", "AuditLog"],
       "actions": [
-        { "label": "Add note", "effect": "Appends a timestamped note to the case timeline" }
+        { "label": "Add note", "effect": "Appends a timestamped note to the case timeline", "toast": "Appends a timestamped note to the case timeline", "kind": "button", "role": "add-note" }
       ]
     },
     {
@@ -85,8 +93,8 @@
       "purpose": "Every denied case, with the specific denial reason and a live appeal deadline countdown.",
       "components": ["AppShell", "DataTable", "ScenarioBanner", "StatusPill", "RecordDrawer"],
       "actions": [
-        { "label": "Attach missing document", "effect": "Attaches the identified document and marks the case ready for appeal" },
-        { "label": "Move to appeals", "effect": "Moves the case into the appeals queue" }
+        { "label": "Attach missing document", "effect": "Attaches the identified document and marks the case ready for appeal", "toast": "Attaches the identified document and marks the case ready for appeal", "kind": "button", "role": "attach-document" },
+        { "label": "Move to appeals", "effect": "Moves the case into the appeals queue", "toast": "Moves the case into the appeals queue", "kind": "button", "role": "move-to-appeals" }
       ]
     },
     {
@@ -96,8 +104,8 @@
       "purpose": "Cases pending human review and submission back to the payer.",
       "components": ["AppShell", "ApprovalQueue", "DocumentViewer", "AuditLog", "ActivityToast"],
       "actions": [
-        { "label": "Submit appeal", "effect": "Submits the appeal to the payer and logs the submission with timestamp" },
-        { "label": "Return for more info", "effect": "Sends the case back to the tracker flagged as needing more documentation" }
+        { "label": "Submit appeal", "effect": "Submits the appeal to the payer and logs the submission with timestamp", "toast": "Submits the appeal to the payer and logs the submission with timestamp", "kind": "button", "role": "submit-appeal" },
+        { "label": "Return for more info", "effect": "Sends the case back to the tracker flagged as needing more documentation", "toast": "Sends the case back to the tracker flagged as needing more documentation", "kind": "button" }
       ]
     },
     {
@@ -165,13 +173,7 @@
     ]
   },
   "design": {
-    "palette": {
-      "surface": "#F4F6F3",
-      "ink": "#1F2A24",
-      "primary": "#2F5D50",
-      "accent": "#C98A2C",
-      "muted": "#5E6B64"
-    },
+    "palette": "clinical-green-amber",
     "typefaces": {
       "heading": "Source Serif 4",
       "body": "Public Sans"

@@ -56,34 +56,59 @@ export function checkContrast(palette: Palette): ContrastCheck[] {
   });
 }
 
-function main() {
-  const target = process.argv[2];
-  if (!target) {
-    console.error("Usage: theme:gen <path-to-prototype-dir>");
-    process.exit(1);
-  }
-  const themeFile = path.join(target, "src", "theme.ts");
-  const palette = extractPalette(themeFile);
-  const checks = checkContrast(palette);
+// Presets live in contracts/palettes.json (the single source; validate-brief
+// checks design.palette against the same file). Same contrast function as above.
+export function loadPalettes(palettesPath: string): Record<string, Palette> {
+  return JSON.parse(readFileSync(palettesPath, "utf-8"));
+}
 
+export function presetPalette(name: string, palettesPath: string): Palette {
+  const presets = loadPalettes(palettesPath);
+  if (!presets[name]) throw new Error(`no palette preset "${name}" in ${palettesPath} (have: ${Object.keys(presets).join(", ")})`);
+  return presets[name];
+}
+
+function printChecks(label: string, palette: Palette): boolean {
+  const checks = checkContrast(palette);
+  if (label) console.log(label);
   console.log(`Palette: ${JSON.stringify(palette)}`);
   console.log("");
   console.log("Contrast ratios (WCAG AA normal text requires >= 4.5:1):");
-  let allPass = true;
   for (const c of checks) {
-    const status = c.pass ? "PASS" : "FAIL";
-    if (!c.pass) allPass = false;
-    console.log(`  ${c.pair.padEnd(16)} ${c.ratio.toFixed(2)}:1  ${status}`);
+    console.log(`  ${c.pair.padEnd(16)} ${c.ratio.toFixed(2)}:1  ${c.pass ? "PASS" : "FAIL"}`);
   }
-
-  if (!allPass) {
-    console.error("\ntheme:gen FAILED — one or more required pairs are below 4.5:1.");
-    process.exit(1);
-  }
-  console.log("\ntheme:gen PASSED.");
+  return checks.every((c) => c.pass);
 }
 
-const invokedDirectly = process.argv[1]?.replace(/\\/g, "/").endsWith("gates/theme-gen.ts");
-if (invokedDirectly) {
-  main();
+// usage: theme-gen <prototype-dir> | --preset <name> | --presets
+// Returns the exit code.
+function main(entry: string): number {
+  const [target, presetName] = process.argv.slice(2);
+  const palettesPath = path.join(path.dirname(entry), "..", "contracts", "palettes.json");
+  if (!target) {
+    console.error("Usage: theme:gen <path-to-prototype-dir> | --preset <name> | --presets");
+    return 1;
+  }
+  let allPass = true;
+  if (target === "--presets") {
+    for (const [name, palette] of Object.entries(loadPalettes(palettesPath))) {
+      if (!printChecks(`== preset ${name}`, palette)) allPass = false;
+      console.log("");
+    }
+  } else if (target === "--preset") {
+    allPass = printChecks(`== preset ${presetName}`, presetPalette(presetName, palettesPath));
+  } else {
+    allPass = printChecks("", extractPalette(path.join(target, "src", "theme.ts")));
+  }
+  if (!allPass) {
+    console.error("\ntheme:gen FAILED — one or more required pairs are below 4.5:1.");
+    return 1;
+  }
+  console.log("\ntheme:gen PASSED.");
+  return 0;
+}
+
+const entry = process.argv[1]?.replace(/\\/g, "/") ?? "";
+if (entry.endsWith("gates/theme-gen.ts")) {
+  process.exit(main(entry));
 }

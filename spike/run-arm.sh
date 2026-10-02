@@ -29,6 +29,12 @@ STARTER_DIR="$ROOT/archetypes/prior-auth-rcm"
 BRIEF="$ROOT/spike/inputs/sample-brief.json"
 PROMPT="$ROOT/spike/inputs/builder.md"
 [ -s "$BRIEF" ] && [ -s "$PROMPT" ] || { echo "missing/empty spike inputs" >&2; exit 3; }
+# The archetype comes from the brief; its Gate Contract addendum (contracts/archetypes/<archetype>/,
+# in this repo, so CI has it) goes into the prompt between builder.md and the brief. A missing
+# contract aborts the arm before any builder runs.
+ARCHETYPE="$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).archetype ?? ""))' "$BRIEF")"
+ARCH_CONTRACT="$(node "$ROOT/spike/render-archetype-contract.mjs" "$ARCHETYPE")" \
+  || { echo "no archetype contract for brief archetype '$ARCHETYPE' (contracts/archetypes/$ARCHETYPE/)" >&2; exit 3; }
 OUT_DIR="$ROOT/spike/out/$ARM"
 mkdir -p "$OUT_DIR"
 # Outside the prototype dir, so the builder can never touch it.
@@ -116,7 +122,7 @@ run_builder() {
   local log_file="$OUT_DIR/attempt-$attempt.log"
   local prompt_file="$OUT_DIR/attempt-$attempt-prompt.txt"
   local prompt_text
-  prompt_text="$(sed "s|<repo-name>|$PROTO_NAME|g" "$PROMPT")"$'\n\n## Brief\n'"$(cat "$BRIEF")"
+  prompt_text="$(sed "s|<repo-name>|$PROTO_NAME|g" "$PROMPT")"$'\n\n## Archetype Contract\n'"$(printf '%s' "$ARCH_CONTRACT" | sed "s|<repo-name>|$PROTO_NAME|g")"$'\n\n## Brief\n'"$(cat "$BRIEF")"
   if [ -n "$fix_block" ]; then
     prompt_text="$prompt_text"$'\n\n## Fix block (attempt '"$attempt"$')\n'"$fix_block"
   fi
