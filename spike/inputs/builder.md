@@ -105,11 +105,11 @@ miss fails the build. `<repo-name>` is the name of your working directory.
    `human_checkpoint.screen_id` screen, give the same case's `ApprovalItem`
    `edgeCase: true`. Exactly one element per screen carries
    `data-edge-case="true"`.
-8. On the edge-case screen the marked row's bottom edge is within the first
-   800 px at 1280x800 (list it first, keep anything above it short), and it
-   is visible at 1200x630 once scrolled into view. No drawer, overlay or
-   toast covers it. You do not create `cover.png`: the gate screenshots this
-   screen at 1200x630 with the row scrolled into view.
+8. On the `edge_case.screen_id` screen, the marked row appears among the
+   first five rows of its table — sort or order the data so it does, and do
+   not bury it below long banners or cards. You do not create `cover.png`:
+   the gate scrolls the row into view and screenshots that screen at
+   1200x630. No drawer, overlay or toast covers it.
 9. The row's text includes the denial reason quoted in
    `brief.edge_case.scenario`, and is identical after a page reload.
    Nothing changes on its own and nothing is persisted.

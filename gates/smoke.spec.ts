@@ -140,12 +140,14 @@ test.describe("smoke", () => {
 
     const edgeCaseRow = page.locator('[data-edge-case="true"]');
     await expect(edgeCaseRow).toBeVisible();
-    const box = await edgeCaseRow.boundingBox();
-    expect(box, "edge-case record must have a bounding box").not.toBeNull();
-    expect(
-      box!.y + box!.height,
-      "edge-case record must render in the first viewport at 1280x800, with no scrolling"
-    ).toBeLessThanOrEqual(800);
+    await edgeCaseRow.scrollIntoViewIfNeeded();
+    await expect(edgeCaseRow).toBeInViewport();
+    const precedingRows = await edgeCaseRow.evaluate((el) => {
+      let n = 0;
+      for (let r = (el.closest("tr") ?? el).previousElementSibling; r; r = r.previousElementSibling) n++;
+      return n;
+    });
+    expect(precedingRows, "edge-case row must be among the first 5 rows of its table").toBeLessThan(5);
     await expect(edgeCaseRow).toContainText(denialReason);
     const rowTextBefore = ((await edgeCaseRow.textContent()) ?? "")
       .replace(/\s+/g, " ")
