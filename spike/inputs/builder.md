@@ -81,6 +81,10 @@ ids; a brief action's `role` ties it to that contract.
 4. Every `data-tour` value appears on exactly one element on its screen, and
    that element is visible on page load without a click (not inside a
    closed drawer, tab or accordion), at both 1280 and 390 wide.
+   Never put a data-tour target inside a DataTable cell: at 390px the kit's
+   DataTable collapses every non-primary column into a closed <details>, so
+   the target is hidden. Render such targets as their own element outside the
+   table, such as a banner or panel above it.
 5. These kit components already emit their own attribute. Never wrap them in
    an element carrying the same one: `StoryPanel` -> `story-panel`,
    `ArchitectureView` -> `architecture-diagram`, `AppShell` -> `app-nav`,
