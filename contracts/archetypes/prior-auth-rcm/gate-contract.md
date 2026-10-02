@@ -15,8 +15,8 @@ An action is found by its `role` field in `brief.screens[].actions[]`.
      Give `MetricPanel` the `dataTour` the brief tour targets on this screen.
    - `denials` screen: its `DataTable` rows must be `{{row_id_prefix.denials}}<id>`
      (so its `dataTour` is that prefix minus the trailing `-row-`).
-     Any countdown the tour targets is rendered on the screen itself, always
-     visible, never inside the drawer.
+     The element `data-tour="appeal-countdown"` is the countdown on the
+     screen itself, always visible, never inside the drawer.
    - `appeals` screen: `ApprovalQueue`. If the brief tour targets `X-item` on this
      screen, its `dataTour` is `X` (the first item then carries `X-item`).
    - `case` screen: `Timeline` with the `dataTour` the brief tour targets on this screen.

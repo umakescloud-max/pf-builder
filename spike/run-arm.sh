@@ -76,6 +76,12 @@ reset_prototype() {
   "
   # Pre-install the archetype's deps so the builder never has a reason to touch package.json.
   (cd "$ROOT" && npm install --no-audit --no-fund >/dev/null 2>&1) || true
+  # The brief's design.palette (a preset name) becomes src/theme.ts. Before the baseline snapshot, so the
+  # generated theme is part of the baseline and the builder still may not change it.
+  local palette
+  palette="$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).design?.palette;process.stdout.write(typeof p==="string"?p:"")' "$BRIEF")"
+  (cd "$ROOT" && npm run --silent theme:gen -- --preset "$palette" --write "$PROTO_DIR") \
+    || { echo "theme-gen failed for brief design.palette '$palette' (unknown preset or contrast failure)" >&2; exit 3; }
   # Baseline AFTER the rename/install and BEFORE any builder runs.
   node "$ROOT/spike/check-allowlist.mjs" snapshot "$PROTO_DIR" "$BASELINE"
 }

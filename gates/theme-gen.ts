@@ -3,7 +3,7 @@
 // every required pair, failing if any pair is below 4.5:1. Also used by
 // check-static.ts as a shared function.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { contrastRatio, WCAG_AA_NORMAL_TEXT } from "../kit/src/theme/contrast.ts";
 
@@ -68,6 +68,18 @@ export function presetPalette(name: string, palettesPath: string): Palette {
   return presets[name];
 }
 
+// --preset <name> --write <workspace>: the starter's src/theme.ts with ONLY the five palette
+// hex values replaced by the preset's, written to <workspace>/src/theme.ts.
+function writePresetTheme(palette: Palette, workspace: string, starterThemePath: string): void {
+  let src = readFileSync(starterThemePath, "utf-8");
+  for (const key of Object.keys(palette) as (keyof Palette)[]) {
+    const re = new RegExp(`(${key}:\\s*")#[0-9a-fA-F]{6}(")`);
+    if (!re.test(src)) throw new Error(`starter theme ${starterThemePath} is missing a palette.${key} hex value`);
+    src = src.replace(re, `$1${palette[key]}$2`);
+  }
+  writeFileSync(path.join(workspace, "src", "theme.ts"), src);
+}
+
 function printChecks(label: string, palette: Palette): boolean {
   const checks = checkContrast(palette);
   if (label) console.log(label);
@@ -80,13 +92,13 @@ function printChecks(label: string, palette: Palette): boolean {
   return checks.every((c) => c.pass);
 }
 
-// usage: theme-gen <prototype-dir> | --preset <name> | --presets
+// usage: theme-gen <prototype-dir> | --preset <name> [--write <workspace>] | --presets
 // Returns the exit code.
 function main(entry: string): number {
-  const [target, presetName] = process.argv.slice(2);
+  const [target, presetName, writeFlag, workspace] = process.argv.slice(2);
   const palettesPath = path.join(path.dirname(entry), "..", "contracts", "palettes.json");
   if (!target) {
-    console.error("Usage: theme:gen <path-to-prototype-dir> | --preset <name> | --presets");
+    console.error("Usage: theme:gen <path-to-prototype-dir> | --preset <name> [--write <workspace>] | --presets");
     return 1;
   }
   let allPass = true;
@@ -96,7 +108,12 @@ function main(entry: string): number {
       console.log("");
     }
   } else if (target === "--preset") {
-    allPass = printChecks(`== preset ${presetName}`, presetPalette(presetName, palettesPath));
+    const palette = presetPalette(presetName, palettesPath);
+    allPass = printChecks(`== preset ${presetName}`, palette);
+    if (writeFlag === "--write") {
+      if (!workspace) throw new Error("--write needs a <workspace> path");
+      if (allPass) writePresetTheme(palette, workspace, path.join(path.dirname(entry), "..", "archetypes", "prior-auth-rcm", "src", "theme.ts"));
+    }
   } else {
     allPass = printChecks("", extractPalette(path.join(target, "src", "theme.ts")));
   }

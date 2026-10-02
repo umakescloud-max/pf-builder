@@ -93,11 +93,13 @@ ids; a brief action's `role` ties it to that contract.
    `human_checkpoint.screen_id` screen, give the same case's `ApprovalItem`
    `edgeCase: true`. Exactly one element per screen carries
    `data-edge-case="true"`.
-8. On the `edge_case.screen_id` screen, the marked row appears among the
-   first five rows of its table — sort or order the data so it does, and do
-   not bury it below long banners or cards. You do not create `cover.png`:
+8. The edge-case row must appear among the first five rows. You do not create
+   `cover.png`:
    the gate scrolls the row into view and screenshots that screen at
-   1200x630. No drawer, overlay or toast covers it.
+   1200x630. No drawer, overlay or toast covers it. Do not sort, reorder or
+   filter the edge-case screen's table by default. Rows must render in the
+   order src/seed.ts produces them, and src/seed.ts must place the edge-case
+   record within its first five rows.
 9. The row's text includes `brief.edge_case.label`, and is identical after
    a page reload. Nothing changes on its own and nothing is persisted.
 10. See Archetype Contract.
