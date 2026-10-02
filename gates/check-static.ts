@@ -6,6 +6,7 @@
 //    literal ISO dates in seed, image imports outside the kit
 //  - no changes to package files, kit, theme, or brief
 //  - tour.json valid (schema + routes referenced actually exist)
+//  - screens never write a data-tour value the kit already emits
 //  - theme contrast AA (delegates to theme-gen.ts)
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -33,6 +34,16 @@ const FORBIDDEN_PATTERNS: { rule: string; pattern: RegExp }[] = [
 // Literal ISO date, e.g. "2026-09-30" — seed.ts must only produce dates via
 // rel()/addBusinessDays(), never a hardcoded calendar date.
 const ISO_DATE_PATTERN = /\b\d{4}-\d{2}-\d{2}\b/;
+
+// data-tour values the kit components emit themselves (Gate Contract item 5).
+// A screen that also writes the attribute produces two matching elements.
+const KIT_EMITTED_TOURS: Record<string, string> = {
+  "story-panel": "StoryPanel",
+  "architecture-diagram": "ArchitectureView",
+  "app-nav": "AppShell",
+  "tour-replay": "TourRunner",
+  "one-click-login": "OneClickLogin",
+};
 
 function walk(dir: string, exts: string[]): string[] {
   const out: string[] = [];
@@ -145,6 +156,24 @@ function checkTourRoutesExist(prototypeDir: string, violations: Violation[]) {
   }
 }
 
+function checkDataTourDuplicatesKit(srcDir: string, violations: Violation[]) {
+  const screensDir = path.join(srcDir, "screens");
+  for (const file of walk(screensDir, [".tsx"])) {
+    const lines = readFileSync(file, "utf-8").split(/\r?\n/);
+    lines.forEach((line, i) => {
+      for (const m of line.matchAll(/data-tour=\{?\s*["'`]([^"'`]+)["'`]/g)) {
+        const component = KIT_EMITTED_TOURS[m[1]];
+        if (!component) continue;
+        violations.push({
+          file: path.relative(process.cwd(), file),
+          rule: "data-tour-duplicates-kit",
+          detail: `line ${i + 1} writes data-tour="${m[1]}", but the kit's <${component}> already emits that attribute itself, so the page has two matching elements and the tour target is ambiguous. Remove the element that carries data-tour="${m[1]}" (render <${component}> directly, with no wrapper) and, if <${component}> takes a dataTour prop, pass the target through that prop instead.`,
+        });
+      }
+    });
+  }
+}
+
 function checkThemeContrast(prototypeDir: string, violations: Violation[]) {
   const palette = extractPalette(path.join(prototypeDir, "src", "theme.ts"));
   const checks = checkContrast(palette);
@@ -173,6 +202,7 @@ function main() {
   checkForbiddenPatterns(srcDir, violations);
   checkImageImportsOutsideKit(srcDir, violations);
   checkTourRoutesExist(target, violations);
+  checkDataTourDuplicatesKit(srcDir, violations);
   checkThemeContrast(target, violations);
   if (starter) {
     checkNoDependencyChanges(target, starter, violations);
