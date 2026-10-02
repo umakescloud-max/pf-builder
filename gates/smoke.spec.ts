@@ -147,7 +147,9 @@ test.describe("smoke", () => {
       "edge-case record must render in the first viewport at 1280x800, with no scrolling"
     ).toBeLessThanOrEqual(800);
     await expect(edgeCaseRow).toContainText(denialReason);
-    const rowTextBefore = await edgeCaseRow.innerText();
+    const rowTextBefore = ((await edgeCaseRow.textContent()) ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
 
     // Reloading without clicking anything must never change its status —
     // nothing moves on its own.

@@ -131,10 +131,14 @@ miss fails the build. `<repo-name>` is the name of your working directory.
 14. A button's accessible name is exactly the brief action `label`. It is
     unique on the page and enabled in its initial state. "Add note" must
     work with an empty note field (it appends a timestamped default note).
-15. "Open case": clicking a tracker row navigates to `/case?case=<id>`
-    (`#/case?case=4471` under the hash router) and logs the effect. The
-    Case screen reads the query parameter `case` and defaults to the edge
-    case id.
+15. Clicking any row in the Tracker table navigates immediately to
+    `/case?case=<id>` (`#/case?case=4471` under the hash router) and logs
+    that action's effect. Do not open a `RecordDrawer`, modal or any other
+    intermediate panel on the Tracker screen, and do not require a second
+    click on an "Open case" button — the row click itself is the
+    navigation. Row-click-opens-a-drawer is correct on Denials, not on
+    Tracker. The Case screen reads the query parameter `case` and defaults
+    to the edge case id.
 
 ### Always
 16. Zero `console.error` output and zero uncaught exceptions while loading

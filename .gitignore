@@ -11,3 +11,5 @@ test-results/
 playwright-report/
 .pf/
 spike/out/
+# dispatch artifact downloads — never committed
+artifacts/
