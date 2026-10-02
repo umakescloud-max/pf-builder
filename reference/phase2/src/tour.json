@@ -1,0 +1,66 @@
+[
+  {
+    "id": "meet-dana",
+    "screen_id": "story",
+    "route": "/",
+    "target": "story-panel",
+    "title": "Meet Dana",
+    "body": "Dana manages prior auth for a 6-provider orthopedic practice. Here's her morning before and after this tool."
+  },
+  {
+    "id": "all-cases-one-view",
+    "screen_id": "tracker",
+    "route": "/tracker",
+    "target": "tracker-table",
+    "title": "Every case, one view",
+    "body": "All open and recent prior auth cases across every payer, with days remaining on each SLA."
+  },
+  {
+    "id": "case-history",
+    "screen_id": "case",
+    "route": "/case",
+    "target": "case-timeline",
+    "title": "Full case history",
+    "body": "Every submission, call, and document for a case, in one timeline."
+  },
+  {
+    "id": "denial-flagged",
+    "screen_id": "denials",
+    "route": "/denials",
+    "target": "denial-row-4471",
+    "title": "A denial, caught immediately",
+    "body": "This case was denied for a missing clinical note. The system flagged it the moment the payer responded, not days later."
+  },
+  {
+    "id": "appeal-deadline",
+    "screen_id": "denials",
+    "route": "/denials",
+    "target": "appeal-countdown",
+    "title": "The clock is visible",
+    "body": "A live countdown to the appeal deadline. No more guessing from memory."
+  },
+  {
+    "id": "human-review",
+    "screen_id": "appeals",
+    "route": "/appeals",
+    "target": "approval-queue-item",
+    "title": "Dana still decides",
+    "body": "Nothing goes back to the payer until Dana reviews it and clicks submit herself."
+  },
+  {
+    "id": "metrics-overview",
+    "screen_id": "tracker",
+    "route": "/tracker",
+    "target": "metric-panel",
+    "title": "The numbers that matter",
+    "body": "Open cases, average decision time, denial rate, and appeals won — all computed from real case data."
+  },
+  {
+    "id": "how-it-works",
+    "screen_id": "architecture",
+    "route": "/architecture",
+    "target": "architecture-diagram",
+    "title": "How this would be built",
+    "body": "This concept maps to the practice's existing tools: Epic for records, Availity and payer portals for submission, with human approval before every payer-facing action."
+  }
+]
