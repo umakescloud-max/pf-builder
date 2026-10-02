@@ -35,6 +35,20 @@ PROMPT="$ROOT/spike/inputs/builder.md"
 ARCHETYPE="$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).archetype ?? ""))' "$BRIEF")"
 ARCH_CONTRACT="$(node "$ROOT/spike/render-archetype-contract.mjs" "$ARCHETYPE")" \
   || { echo "no archetype contract for brief archetype '$ARCHETYPE' (contracts/archetypes/$ARCHETYPE/)" >&2; exit 3; }
+# The kit's real API, generated from kit/src at run time (authoritative), plus kit/KIT.md as behaviour notes.
+# Compiler flags = the archetype tsconfig's compilerOptions minus noEmit/paths/baseUrl (kit has no tsconfig of its
+# own). ponytail: flags copied by hand, re-sync if archetypes/prior-auth-rcm/tsconfig.json changes.
+KIT_MD="$ROOT/kit/KIT.md"
+[ -s "$KIT_MD" ] || { echo "missing/empty kit/KIT.md" >&2; exit 3; }
+KIT_DTS_DIR="$(mktemp -d)"
+KIT_FILES="$(cd "$ROOT" && find kit/src \( -name '*.ts' -o -name '*.tsx' \) ! -name '*.test.*' ! -name '*.spec.*' | LC_ALL=C sort)"
+(cd "$ROOT" && npx tsc $KIT_FILES --target ES2020 --useDefineForClassFields true --lib ES2020,DOM,DOM.Iterable \
+  --module ESNext --skipLibCheck true --moduleResolution Bundler --resolveJsonModule true --isolatedModules true \
+  --jsx react-jsx --strict true --declaration --emitDeclarationOnly --outDir "$KIT_DTS_DIR") \
+  || { echo "kit declaration generation (tsc) failed" >&2; exit 3; }
+# Paths in the headers are relative to kit/ (tsc's rootDir is kit/src).
+KIT_API="$(cd "$KIT_DTS_DIR" && find . -name '*.d.ts' | LC_ALL=C sort | sed 's|^\./||' | while IFS= read -r f; do printf '// file: src/%s\n' "$f"; cat "$f"; done)"
+[ -n "$KIT_API" ] || { echo "kit declaration generation produced no .d.ts files" >&2; exit 3; }
 OUT_DIR="$ROOT/spike/out/$ARM"
 mkdir -p "$OUT_DIR"
 # Outside the prototype dir, so the builder can never touch it.
@@ -128,7 +142,7 @@ run_builder() {
   local log_file="$OUT_DIR/attempt-$attempt.log"
   local prompt_file="$OUT_DIR/attempt-$attempt-prompt.txt"
   local prompt_text
-  prompt_text="$(sed "s|<repo-name>|$PROTO_NAME|g" "$PROMPT")"$'\n\n## Archetype Contract\n'"$(printf '%s' "$ARCH_CONTRACT" | sed "s|<repo-name>|$PROTO_NAME|g")"$'\n\n## Brief\n'"$(cat "$BRIEF")"
+  prompt_text="$(sed "s|<repo-name>|$PROTO_NAME|g" "$PROMPT")"$'\n\n## Archetype Contract\n'"$(printf '%s' "$ARCH_CONTRACT" | sed "s|<repo-name>|$PROTO_NAME|g")"$'\n\n## Kit API (generated from kit source — authoritative)\n'"These declarations are the kit's real exported API. Use only props, types, values and functions that appear here. If KIT.md disagrees with these declarations, the declarations win."$'\n'"$KIT_API"$'\n\n## Kit Behaviour\n'"$(sed "s|<repo-name>|$PROTO_NAME|g" "$KIT_MD")"$'\n\n## Brief\n'"$(cat "$BRIEF")"
   if [ -n "$fix_block" ]; then
     prompt_text="$prompt_text"$'\n\n## Fix block (attempt '"$attempt"$')\n'"$fix_block"
   fi
