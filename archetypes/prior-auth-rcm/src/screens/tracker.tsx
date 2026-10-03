@@ -1,7 +1,7 @@
 import { AppShell, EmptyState } from "@kit";
 import { NAV } from "../nav";
 
-export function Tracker() {
+export default function Tracker() {
   return (
     <AppShell
       brandName="Umakes.cloud"

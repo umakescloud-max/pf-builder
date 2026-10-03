@@ -1,7 +1,7 @@
 import { AppShell, EmptyState } from "@kit";
 import { NAV } from "../nav";
 
-export function Appeals() {
+export default function Architecture() {
   return (
     <AppShell
       brandName="Umakes.cloud"
@@ -11,7 +11,7 @@ export function Appeals() {
       personaRole="Role"
       nav={NAV}
     >
-      <EmptyState title="Appeals queue screen" body="This archetype starter has no brief content applied yet." />
+      <EmptyState title="Architecture screen" body="This archetype starter has no brief content applied yet." />
     </AppShell>
   );
 }

@@ -9,7 +9,7 @@
 //  - screens never write a data-tour value the kit already emits
 //  - theme contrast AA (delegates to theme-gen.ts)
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { checkContrast, extractPalette } from "./theme-gen.ts";
 
@@ -123,8 +123,16 @@ interface TourStep {
 function checkTourRoutesExist(prototypeDir: string, violations: Violation[]) {
   const tourPath = path.join(prototypeDir, "src", "tour.json");
   const tour: TourStep[] = JSON.parse(readFileSync(tourPath, "utf-8"));
-  const appTsx = readFileSync(path.join(prototypeDir, "src", "App.tsx"), "utf-8");
-  const routeMatches = [...appTsx.matchAll(/path="([^"]+)"/g)].map((m) => m[1]);
+  // Routes come from the generated src/routes.generated.ts (theme:gen, fixed format, parsed by regex, never
+  // executed); App.tsx path="..." strings are the fallback when that file does not exist.
+  const generatedPath = path.join(prototypeDir, "src", "routes.generated.ts");
+  const fromGenerated = existsSync(generatedPath);
+  const routeMatches = fromGenerated
+    ? [...readFileSync(generatedPath, "utf-8").matchAll(/path:\s*"([^"]+)"/g)].map((m) => m[1])
+    : [...readFileSync(path.join(prototypeDir, "src", "App.tsx"), "utf-8").matchAll(/path="([^"]+)"/g)].map((m) => m[1]);
+  if (fromGenerated && routeMatches.length === 0) {
+    violations.push({ file: "src/routes.generated.ts", rule: "routes-generated-empty", detail: "routes.generated.ts has no routes" });
+  }
 
   if (tour.length < 6 || tour.length > 10) {
     violations.push({ file: "src/tour.json", rule: "tour-length", detail: `${tour.length} steps (must be 6-10)` });
@@ -136,13 +144,13 @@ function checkTourRoutesExist(prototypeDir: string, violations: Violation[]) {
       violations.push({
         file: "src/tour.json",
         rule: "tour-route-missing",
-        detail: `step "${step.id}" has no "route" field. Every tour.json step needs "route": the router path of the screen named by its screen_id (that screen's "route" in the brief, e.g. "/denials"), exactly as registered in App.tsx. Keep id, screen_id, target, title, body as they are.`,
+        detail: `step "${step.id}" has no "route" field. Every tour.json step needs "route": the router path of the screen named by its screen_id (that screen's "route" in the brief, e.g. "/denials"), exactly as registered in routes.generated.ts (or App.tsx when that file is absent). Keep id, screen_id, target, title, body as they are.`,
       });
     } else if (!routeMatches.includes(step.route)) {
       violations.push({
         file: "src/tour.json",
         rule: "tour-route-missing",
-        detail: `step "${step.id}" references route "${step.route}", which isn't registered in App.tsx`,
+        detail: `step "${step.id}" references route "${step.route}", which isn't registered in ${fromGenerated ? "routes.generated.ts" : "App.tsx"}`,
       });
     }
     if (seenTargets.has(step.target)) {

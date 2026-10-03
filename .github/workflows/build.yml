@@ -51,6 +51,14 @@ on:
         description: "Brief the builder implements, relative to the repo root."
         type: string
         default: "spike/inputs/sample-brief.json"
+      deepseek_arm:
+        description: "Arm P-DS (OpenCode x DeepSeek direct). Needs only DEEPSEEK_API_KEY; skips the OpenRouter preflight, allowlist and spend ceiling. Unmetered by design: cost is computed from reported tokens."
+        type: boolean
+        default: true
+      deepseek_model:
+        description: "Arm P-DS model, bare DeepSeek id (bare alias, no pinned snapshot)."
+        type: string
+        default: "deepseek-flash"
 
 permissions:
   contents: write
@@ -68,6 +76,7 @@ env:
   OPENCODE_VERSION: "1.18.31"
   AIDER_VERSION: "0.86.2"
   PAID_MODEL: ${{ inputs.paid_model }}
+  DEEPSEEK_MODEL: ${{ inputs.deepseek_model }}
   PF_BRIEF_PATH: ${{ inputs.brief_path }}
   # Hard spend ceiling for the whole dispatch, USD, checked against OpenRouter /key (spike/spend.mjs). Not an input on purpose.
   PF_SPEND_CEILING: "2.00"
@@ -169,6 +178,45 @@ jobs:
         with:
           name: spike-arm-p-opencode-openrouter-paid
           path: spike/out/opencode-openrouter-paid
+          if-no-files-found: ignore
+
+  # Arm P-DS: DeepSeek direct. No `needs`: arm P only needs provider-preflight, which is OpenRouter-specific and
+  # exits 1 when no OpenRouter/NVIDIA arm is on. Needs only DEEPSEEK_API_KEY. Unmetered by design (no spend.mjs,
+  # PF_SPEND_CEILING is never read for a deepseek/ id); cost is computed from reported tokens by run-opencode.mjs.
+  arm-p-opencode-deepseek:
+    if: inputs.deepseek_arm == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail fast if DEEPSEEK_API_KEY is empty
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          [ -n "$DEEPSEEK_API_KEY" ] || { echo "::error::DEEPSEEK_API_KEY secret is empty or not set"; exit 1; }
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm install -g opencode-ai@${{ env.OPENCODE_VERSION }}
+      - env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          chmod +x spike/run-arm.sh
+          ./spike/run-arm.sh opencode-deepseek opencode "deepseek/$DEEPSEEK_MODEL" || [ $? -eq 2 ]
+      - name: Collect evidence into the arm's artifact folder
+        if: always()
+        run: |
+          out=spike/out/opencode-deepseek/evidence
+          mkdir -p "$out"
+          rsync -a --exclude node_modules --exclude dist prototypes/prior-auth-tracker-v1/ "$out/workspace/" || true
+          for d in test-results playwright-report shots; do [ -d "$d" ] && cp -r "$d" "$out/$d"; done
+          true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-arm-p-opencode-deepseek
+          path: spike/out/opencode-deepseek
           if-no-files-found: ignore
 
   arm-a-opencode-openrouter:
@@ -325,7 +373,7 @@ jobs:
           if-no-files-found: ignore
 
   report:
-    needs: [provider-preflight, arm-p-opencode-openrouter-paid, arm-a-opencode-openrouter, arm-b-aider-openrouter, arm-c-opencode-nvidia, arm-d-gemini-cli-openrouter, arm-e-aider-gemini]
+    needs: [provider-preflight, arm-p-opencode-openrouter-paid, arm-p-opencode-deepseek, arm-a-opencode-openrouter, arm-b-aider-openrouter, arm-c-opencode-nvidia, arm-d-gemini-cli-openrouter, arm-e-aider-gemini]
     if: always()
     runs-on: ubuntu-latest
     steps:

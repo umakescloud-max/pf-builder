@@ -67,7 +67,7 @@ ids; a brief action's `role` ties it to that contract.
    practice from the brief) and nothing else. Its button stores
    `localStorage["pf-login-<repo-name>"] = "1"` and then shows the story
    screen. If that key is already set, show the story screen immediately.
-   Render this from `src/screens/Story.tsx`.
+   Render this from `src/screens/story.tsx`.
 2. Mount `TourRunner` only after the login key is set (otherwise the tour
    opens over the login button), with `storageKey="pf-tour-<repo-name>"`.
    Build its `steps` by importing `../tour.json`. Do not retype the steps.
@@ -133,8 +133,14 @@ ids; a brief action's `role` ties it to that contract.
 16. Zero `console.error` output and zero uncaught exceptions while loading
     any route at 1280x800 and at 390x844. React key and prop warnings count.
 17. See Archetype Contract.
-18. Do not edit `src/App.tsx` or `src/main.tsx`. Routes are already
-    registered there.
+18. Routes, fonts and the palette are generated from the brief before you
+    start (src/routes.generated.ts, src/fonts.generated.ts, src/theme.ts).
+    Never edit src/App.tsx, src/main.tsx, src/theme.ts or any *.generated.ts
+    file; use only what they already export. Write one file per screen in
+    src/screens/, named exactly as the screen id in the brief (all lowercase);
+    each must default-export a React component. src/theme.ts is generated from
+    the brief's palette before you start. Never edit it; use only what it
+    already exports.
 
 ## On retry (fix loop)
 

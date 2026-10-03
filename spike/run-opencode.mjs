@@ -54,6 +54,11 @@ const finish = (outcome, detail) => { if (!state.outcome) { state.outcome = outc
 if (/^openrouter\//.test(model ?? "") && !isAllowed(model)) finish("config_error", `refusing non-allowlisted OpenRouter model ${bareId(model)}`);
 if (metered && !state.outcome && (!env.OPENROUTER_API_KEY || !Number.isFinite(SPEND_START))) finish("config_error", "paid model without OPENROUTER_API_KEY and PF_SPEND_START: spend cannot be metered");
 if (/gemini|^google\//i.test(model ?? "")) finish("config_error", `OpenCode must never run against Gemini (${model})`);
+// DeepSeek direct (deepseek/<id>): unmetered by design. None of the OpenRouter checks above apply (they match the
+// openrouter/ prefix only); no spend.mjs, no ceiling. Cost is computed from reported tokens when the result is written.
+const deepseek = /^deepseek\//.test(model ?? "");
+if (deepseek && !env.DEEPSEEK_API_KEY) finish("config_error", "deepseek model without DEEPSEEK_API_KEY");
+const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
 // One step = one chat-completions request. An empty step (HTTP 200, no error, no content and
 // no tool call) is logged raw and retried once. Reasoning alone does not make a step non-empty:
@@ -170,6 +175,20 @@ if (!state.outcome) {
     spawnEnv.OPENCODE_CONFIG = cfg;
     useModel = `nvidia-paced/${model}`;
   }
+  if (deepseek) {
+    // Inline provider, same mechanism as nvidia-paced. The key is an OpenCode env reference, so it is never written to disk.
+    const id = model.slice("deepseek/".length);
+    const cfg = path.join(tmpdir(), `pf-opencode-${process.pid}.json`);
+    writeFileSync(cfg, JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      provider: { deepseek: {
+        npm: "@ai-sdk/openai-compatible", name: "DeepSeek (direct)",
+        options: { baseURL: "https://api.deepseek.com", apiKey: "{env:DEEPSEEK_API_KEY}" },
+        models: { [id]: { name: id, limit: { context: 1000000, output: 32768 } } },
+      } },
+    }));
+    spawnEnv.OPENCODE_CONFIG = cfg;
+  }
   const bin = env.OPENCODE_BIN ?? "opencode";
   const binArgs = env.OPENCODE_BIN_ARGS ? JSON.parse(env.OPENCODE_BIN_ARGS) : [];
   child = spawn(bin, [...binArgs, "run", "--auto", "--model", useModel, "--format", "json", readFileSync(promptFile, "utf-8")], {
@@ -187,6 +206,7 @@ if (!state.outcome) {
       checkSpend();
       const t = ev.part?.tokens;
       if (t) { state.sawTokens = true; state.peak = Math.max(state.peak, t.total ?? (t.input ?? 0) + (t.output ?? 0)); }
+      if (t) { usage.input += t.input ?? 0; usage.output += (t.output ?? 0) + (t.reasoning ?? 0); usage.cacheRead += t.cache?.read ?? 0; usage.cacheWrite += t.cache?.write ?? 0; }
       const reason = ev.part?.reason;
       if (reason === "error") { finish("provider_error", `step_finish reason=error: ${JSON.stringify(ev).slice(0, 1500)}`); graceT = setTimeout(stop, GRACE_MS); }
       else if (reason && reason !== "tool-calls") { finish("completed", `step_finish reason=${reason}`); graceT = setTimeout(stop, GRACE_MS); }
@@ -225,11 +245,27 @@ if (!state.outcome) {
 }
 
 proxy?.close();
+// DeepSeek FLASH cost per 1M USD, off-peak: miss 0.15, hit 0.003, out 0.60; peak (weekdays 01-04 and 06-10 UTC) doubles.
+// OpenCode does not expose DeepSeek's cache hit/miss split (cache.read stays 0), so unless it reports one, all input is
+// priced at the miss rate and the figure is an upper bound. The API's returned model id is not in OpenCode's events.
+let deepseekUsage;
+if (deepseek) {
+  const now = new Date(), d = now.getUTCDay(), h = now.getUTCHours();
+  const peak = d >= 1 && d <= 5 && ((h >= 1 && h < 4) || (h >= 6 && h < 10));
+  const split = usage.cacheRead > 0;
+  const hit = split ? usage.cacheRead : 0, miss = split ? usage.input + usage.cacheWrite : usage.input;
+  const cost = ((miss * 0.15 + hit * 0.003 + usage.output * 0.6) / 1e6) * (peak ? 2 : 1);
+  deepseekUsage = { tokens: { hit, miss, completion: usage.output }, peak_window: peak, cost_usd: Number(cost.toFixed(6)),
+    cost_basis: split ? "reported cache split" : "upper bound: cache hit/miss not exposed, all input at the miss rate",
+    model_id_returned: "not exposed by OpenCode events" };
+  console.log("DEEPSEEK_USAGE " + JSON.stringify(deepseekUsage));
+}
 writeFileSync(resultFile, JSON.stringify({
   outcome: state.outcome, detail: state.detail, steps: state.steps,
   peak_tokens: state.sawTokens ? state.peak : "unknown",
   proxy_requests: paced ? state.proxyRequests : "unknown",
   empty_steps: state.emptySteps, empty_recovered: state.emptyRecovered,
   opencode_cost_usd: state.cost, // OpenCode's own estimate; OpenRouter /key is the authoritative spend
+  ...(deepseekUsage ? { deepseek: deepseekUsage } : {}),
 }));
 process.exit(0);

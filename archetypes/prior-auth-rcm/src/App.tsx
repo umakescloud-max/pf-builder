@@ -1,20 +1,20 @@
+/// <reference types="vite/client" />
+import type { ComponentType } from "react";
 import { Route, Routes } from "react-router-dom";
-import { Story } from "./screens/Story";
-import { Tracker } from "./screens/Tracker";
-import { Case } from "./screens/Case";
-import { Denials } from "./screens/Denials";
-import { Appeals } from "./screens/Appeals";
-import { Architecture } from "./screens/Architecture";
+import { routes } from "./routes.generated";
+
+// One file per screen in ./screens, named exactly as the brief's screen id, default-exporting a component.
+const modules = import.meta.glob<{ default: ComponentType }>("./screens/*.tsx", { eager: true });
+const screens: Record<string, ComponentType> = {};
+for (const [file, mod] of Object.entries(modules)) screens[file.replace(/^.*\/([^/]+)\.tsx$/, "$1")] = mod.default;
 
 export default function App() {
   return (
     <Routes>
-      <Route path="/" element={<Story />} />
-      <Route path="/tracker" element={<Tracker />} />
-      <Route path="/case" element={<Case />} />
-      <Route path="/denials" element={<Denials />} />
-      <Route path="/appeals" element={<Appeals />} />
-      <Route path="/architecture" element={<Architecture />} />
+      {routes.map(({ id, path }) => {
+        const Screen = screens[id];
+        return <Route key={id} path={path} element={Screen ? <Screen /> : <div>Screen not built: {id}</div>} />;
+      })}
     </Routes>
   );
 }

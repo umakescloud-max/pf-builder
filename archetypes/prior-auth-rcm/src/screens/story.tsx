@@ -1,7 +1,8 @@
 import { AppShell, EmptyState } from "@kit";
 import { NAV } from "../nav";
 
-export function Case() {
+// Starter stub — a real build replaces this with brief.story content.
+export default function Story() {
   return (
     <AppShell
       brandName="Umakes.cloud"
@@ -11,7 +12,7 @@ export function Case() {
       personaRole="Role"
       nav={NAV}
     >
-      <EmptyState title="Case screen" body="This archetype starter has no brief content applied yet." />
+      <EmptyState title="Story screen" body="This archetype starter has no brief content applied yet." />
     </AppShell>
   );
 }

@@ -53,6 +53,7 @@ OUT_DIR="$ROOT/spike/out/$ARM"
 mkdir -p "$OUT_DIR"
 # Outside the prototype dir, so the builder can never touch it.
 BASELINE="$ROOT/.pf/baseline.json"
+BASELINE_SRC="$ROOT/.pf/baseline-src"
 
 RESULT="$OUT_DIR/result.json"
 
@@ -90,14 +91,19 @@ reset_prototype() {
   "
   # Pre-install the archetype's deps so the builder never has a reason to touch package.json.
   (cd "$ROOT" && npm install --no-audit --no-fund >/dev/null 2>&1) || true
-  # The brief's design.palette (a preset name) becomes src/theme.ts. Before the baseline snapshot, so the
-  # generated theme is part of the baseline and the builder still may not change it.
-  local palette
-  palette="$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).design?.palette;process.stdout.write(typeof p==="string"?p:"")' "$BRIEF")"
-  (cd "$ROOT" && npm run --silent theme:gen -- --preset "$palette" --write "$PROTO_DIR") \
-    || { echo "theme-gen failed for brief design.palette '$palette' (unknown preset or contrast failure)" >&2; exit 3; }
+  # Everything brief-dependent is generated from the brief (theme.ts palette + typefaces, routes.generated.ts,
+  # fonts.generated.ts, src/screens/ pruned to one <id>.tsx per brief screen). Before the baseline snapshot, so the
+  # generated files are part of the baseline and the builder still may not change them.
+  (cd "$ROOT" && npm run --silent theme:gen -- --brief "$BRIEF" --write "$PROTO_DIR") \
+    || { echo "theme-gen failed for brief '$BRIEF' (unknown palette preset, contrast failure, uninstalled typeface or bad screen id)" >&2; exit 3; }
   # Baseline AFTER the rename/install and BEFORE any builder runs.
   node "$ROOT/spike/check-allowlist.mjs" snapshot "$PROTO_DIR" "$BASELINE"
+  # Content copy of the baseline (the snapshot above stores hashes only), so a retry can restore forbidden files
+  # byte for byte. Outside the prototype dir like baseline.json; overwritten so stale content never survives.
+  rm -rf "$BASELINE_SRC"
+  mkdir -p "$BASELINE_SRC"
+  cp -r "$PROTO_DIR/src" "$BASELINE_SRC/src"
+  cp "$PROTO_DIR/package.json" "$BASELINE_SRC/package.json"
 }
 
 # Counters always; regex classification only for builders without their own
@@ -285,6 +291,11 @@ main() {
     node "$ROOT/spike/allowed-model.mjs" "$MODEL" 2>"$OUT_DIR/allowlist.err" || { write_result "config_error" "none" 0 "refusing non-allowlisted OpenRouter model $MODEL: $(cat "$OUT_DIR/allowlist.err")"; exit 0; }
     case "$MODEL" in *:free) ;; *) metered=true;; esac;;
   esac
+  # DeepSeek direct: unmetered by design (metered stays false, so no spend.mjs and no OpenRouter allowlist/ceiling).
+  # Cost is computed from reported tokens in run-opencode.mjs.
+  case "$MODEL" in deepseek/*)
+    [ -n "${DEEPSEEK_API_KEY:-}" ] || { write_result "config_error" "none" 0 "DEEPSEEK_API_KEY is empty"; exit 0; };;
+  esac
   if [ "$BUILDER" = "opencode" ]; then
     case "$MODEL" in *[gG]emini*|google/*) write_result "config_error" "none" 0 "OpenCode must never run against Gemini ($MODEL)"; exit 0;; esac
   fi
@@ -355,7 +366,15 @@ main() {
         write_result "touched_forbidden" "allowlist" "$attempt" "Builder edited files outside the allowlist: $forbidden"
         exit 0
       fi
-      fix_block="You edited files outside the allowed set. Undo any change to these paths and redo your work using only src/screens/, src/nav.ts, src/seed.ts, src/tour.json: $forbidden"
+      # The harness restores them from the content copy of the baseline; the builder is not asked to undo anything.
+      local restored remaining
+      restored="$(node "$ROOT/spike/restore-forbidden.mjs" "$PROTO_DIR" "$BASELINE" "$BASELINE_SRC")"
+      remaining="$(json_field "$restored" remaining)"
+      if [ -n "$remaining" ]; then
+        write_result "touched_forbidden" "allowlist" "$attempt" "Restore left forbidden paths: $remaining (originally: $forbidden)"
+        exit 0
+      fi
+      fix_block="These files are generated and not editable, and have been restored: ${forbidden// (deleted)/}. Do not touch them. Your work belongs only in src/screens/, src/nav.ts, src/seed.ts, src/tour.json."
       attempt=$((attempt + 1))
       continue
     fi

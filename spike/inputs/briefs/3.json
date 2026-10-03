@@ -1,0 +1,441 @@
+{
+  "demoable": true,
+  "duplicate_of": null,
+  "name_base": "evv-visit-exception-queue",
+  "archetype": "prior-auth-rcm",
+  "title": "Home care visit verification and billing hold queue",
+  "one_liner": "One queue for home care visits with missing or mismatched EVV records, held from billing until a coordinator signs off.",
+  "practice": {
+    "name": "Cedar Bend Home Care",
+    "type": "Non-medical home care agency, personal care and companion services",
+    "size": "32 caregivers, about 340 visits a week, Medicaid waiver and private-pay clients"
+  },
+  "persona": {
+    "name": "Marisol Reyes",
+    "role": "Visit verification and billing coordinator",
+    "day_in_the_life": "Marisol starts at 7:20am on Monday. Last week's 340 visits sit in three places that don't talk: the scheduling calendar, the caregiver app's clock-in and clock-out events, and the state EVV aggregator's confirmation file. She pastes all three into a reconciliation spreadsheet her predecessor built, filters for blanks and mismatches by hand, and works the list until both deadlines close on Thursday: the caregiver payroll run at 1pm and the Friday Medicaid claim batch. Last week 38 visits came back flagged, and two caregivers were paid late because of it."
+  },
+  "problem": {
+    "current_workflow": "Visit data arrives from three systems that don't reconcile: the schedule, the caregiver mobile app, and the state EVV aggregator file. Marisol exports each into a spreadsheet, sorts for missing clock-outs and location mismatches by eye, then calls caregivers and family members to fill in the gaps before the weekly payroll and claim deadlines.",
+    "pain_points": [
+      "A missing clock-out or an out-of-geofence clock-in is only caught when a person reads a spreadsheet",
+      "The same visit can look correct in the caregiver app and wrong in the state aggregator, with no single record of truth",
+      "Exceptions are worked in the same short week they're due, with no buffer before payroll and claims close",
+      "Address and authorization changes don't propagate, so a visit that was actually fine gets flagged anyway"
+    ],
+    "cost_of_pain": "Marisol spends 9 to 11 hours a week reconciling visit records by hand, about 130 caregiver hours a week sit on hold until they clear, and roughly $3,100 in wages reaches caregivers after payday. Every Friday claim batch also carries a handful of visits at risk of rejection."
+  },
+  "story": {
+    "before": "Monday, 7:20am. Marisol opens the scheduling portal, the caregiver app export, and the state aggregator file side by side and pastes all three into the reconciliation spreadsheet. She filters for blanks and starts working down the list. At 9:40am she reaches a Thursday visit for client H. Pruitt: caregiver Dwayne Ellison clocked in on his phone at 8:02am, there's no clock-out, and the aggregator shows that clock-in 0.4 miles outside the geofence on file. She calls Dwayne (voicemail), calls the family (they confirm he stayed until noon), types a note, and moves on. That was one visit out of 38. Payroll closes Thursday at 1pm.",
+    "after": "Monday, 7:20am. Marisol opens one queue. Last week's visits are already reconciled against the state file, and 38 are waiting with a plain reason next to each: no clock-out recorded, location outside geofence, visit overlaps another visit, service code mismatch. She opens visit #41882, sees that the client's address changed two weeks ago and the profile was never updated, corrects the address, attaches the family's written confirmation, and sends the visit to billing review. By 7:55am she has cleared 14 of the 38; every remaining visit has a named next step and an owner. Payroll and the Friday claim batch both run on time."
+  },
+  "edge_case": {
+    "scenario": "Visit #41882 (caregiver Dwayne Ellison, client H. Pruitt, personal care, Thursday 8:00am-12:00pm) has no clock-out recorded, and the clock-in GPS reads 0.4 miles outside the geofence on file. The root cause is a conflicting record: the client moved two apartments over two weeks ago and nobody updated the address or geofence, so one clean four-hour visit is flagged twice.",
+    "how_handled": "The visit sits in the Exceptions queue with the reason 'No clock-out recorded' and a live age in business days computed from the visit date, never written in. Marisol corrects the client address in the record, attaches the family's written confirmation of the four hours, and moves the visit to billing review herself; nothing clears on its own.",
+    "screen_id": "exceptions",
+    "record_id": "41882",
+    "label": "No clock-out recorded"
+  },
+  "human_checkpoint": {
+    "where": "Billing review queue",
+    "what_staff_does": "Marisol reviews the corrected visit record, the confirmed hours, and the attached family confirmation, then clicks 'Approve for billing'. Only then does the visit enter the Friday Medicaid claim batch and the caregiver's payroll.",
+    "screen_id": "billing-review"
+  },
+  "named_tools": [],
+  "metrics": [
+    {
+      "label": "Visits waiting on verification",
+      "computed_from": "Count of visits where verification_status equals flagged or pending"
+    },
+    {
+      "label": "Caregiver hours held from payroll",
+      "computed_from": "Sum of confirmed_hours across visits where verification_status equals flagged"
+    },
+    {
+      "label": "Exception rate, last 7 days",
+      "computed_from": "Count of visits where flagged_date falls within the last 7 days divided by count of all visits where visit_date falls within the last 7 days"
+    },
+    {
+      "label": "Average days to clear an exception",
+      "computed_from": "Mean of cleared_date minus flagged_date across visits that have been cleared"
+    }
+  ],
+  "roles": {
+    "tracker": "visits",
+    "case": "visit",
+    "denials": "exceptions",
+    "appeals": "billing-review"
+  },
+  "screens": [
+    {
+      "id": "story",
+      "route": "/",
+      "name": "Story",
+      "purpose": "Introduce Marisol, the agency, and the before and after of her Monday morning.",
+      "components": [
+        "AppShell",
+        "ConceptBadge",
+        "StoryPanel",
+        "TourRunner"
+      ],
+      "actions": [
+        {
+          "label": "Start the tour",
+          "effect": "Begins the guided tour at the visit tracker screen",
+          "toast": "Tour started",
+          "kind": "button"
+        }
+      ]
+    },
+    {
+      "id": "visits",
+      "route": "/visits",
+      "name": "Visit tracker",
+      "purpose": "Last week's visits in one list, each reconciled against the state EVV file, with flagged visits surfaced first.",
+      "components": [
+        "AppShell",
+        "DataTable",
+        "StatusPill",
+        "MetricPanel",
+        "RecordDrawer"
+      ],
+      "actions": [
+        {
+          "label": "Open visit",
+          "effect": "Opens the clicked visit on the visit detail screen",
+          "toast": "Opened visit detail",
+          "kind": "row-click",
+          "role": "open-case",
+          "target_screen_id": "visit"
+        },
+        {
+          "label": "Filter by exception reason",
+          "effect": "Narrows the table to visits carrying the selected exception reason",
+          "toast": "Filtered by exception reason",
+          "kind": "button"
+        }
+      ]
+    },
+    {
+      "id": "visit",
+      "route": "/visit",
+      "name": "Visit detail",
+      "purpose": "The full record of one visit: schedule, clock events, aggregator response, and every note since.",
+      "components": [
+        "AppShell",
+        "Timeline",
+        "DocumentViewer",
+        "StatusPill",
+        "AuditLog"
+      ],
+      "actions": [
+        {
+          "label": "Add note",
+          "effect": "Appends a timestamped note to the visit timeline",
+          "toast": "Note added to visit",
+          "kind": "button",
+          "role": "add-note"
+        }
+      ]
+    },
+    {
+      "id": "exceptions",
+      "route": "/exceptions",
+      "name": "Exceptions",
+      "purpose": "Every visit that failed verification, with the reason in plain words and how long it has been waiting.",
+      "components": [
+        "AppShell",
+        "DataTable",
+        "ScenarioBanner",
+        "StatusPill",
+        "RecordDrawer"
+      ],
+      "actions": [
+        {
+          "label": "Attach supporting note",
+          "effect": "Attaches the family's written confirmation to visit #41882 and marks the missing clock-out as documented",
+          "toast": "Confirmation note attached to visit #41882",
+          "kind": "button",
+          "role": "attach-document"
+        },
+        {
+          "label": "Send to billing review",
+          "effect": "Moves the visit out of Exceptions and into the billing review queue",
+          "toast": "Visit #41882 sent to billing review",
+          "kind": "button",
+          "role": "move-to-appeals"
+        }
+      ]
+    },
+    {
+      "id": "billing-review",
+      "route": "/billing-review",
+      "name": "Billing review",
+      "purpose": "Visits waiting on a person before they reach the claim batch or the pay run.",
+      "components": [
+        "AppShell",
+        "ApprovalQueue",
+        "DocumentViewer",
+        "AuditLog",
+        "ActivityToast"
+      ],
+      "actions": [
+        {
+          "label": "Approve for billing",
+          "effect": "Releases the visit into the Friday Medicaid claim batch and the caregiver's payroll",
+          "toast": "Visit #41882 approved for billing",
+          "kind": "button",
+          "role": "submit-appeal"
+        },
+        {
+          "label": "Send back for more information",
+          "effect": "Returns the visit to Exceptions flagged as still needing documentation",
+          "toast": "Visit #41882 returned to exceptions",
+          "kind": "button"
+        }
+      ]
+    },
+    {
+      "id": "architecture",
+      "route": "/architecture",
+      "name": "How this would work",
+      "purpose": "Shows the systems this prototype would sit between, and the compliance posture the work implies.",
+      "components": [
+        "AppShell",
+        "ArchitectureView",
+        "IntegrationTiles"
+      ],
+      "actions": []
+    }
+  ],
+  "seed_data": {
+    "entities": [
+      {
+        "name": "Visits",
+        "count": 320,
+        "fields": [
+          "visit_id",
+          "client_id",
+          "client_name",
+          "caregiver_id",
+          "caregiver_name",
+          "service_code",
+          "service_label",
+          "visit_date",
+          "scheduled_start",
+          "scheduled_end",
+          "confirmed_hours",
+          "clock_in_time",
+          "clock_in_method",
+          "clock_out_time",
+          "geofence_status",
+          "verification_status",
+          "exception_reason",
+          "flagged_date",
+          "cleared_date",
+          "payroll_status",
+          "claim_batch"
+        ],
+        "realism_notes": "About 86% of visits verify clean on the first pass, roughly 12% come back flagged, and the rest are same-day visits still waiting on the state aggregator file. Flagged visits spread across four plain-language reasons: no clock-out recorded, location outside geofence, visit overlaps another visit, service code mismatch. Service codes are HCPCS personal care codes with the kit's own plain-language labels, e.g. T1019 'personal care, 15-minute unit'. All client and caregiver names are fictional. Visit #41882 is the edge case: caregiver Dwayne Ellison, client H. Pruitt, T1019 personal care, visit_date 4 days ago (a Thursday), scheduled 8:00am-12:00pm, confirmed_hours 4.0, clock_in 8:02am via mobile GPS, clock_out blank, geofence_status 'outside geofence' because the client moved two apartments over two weeks ago and the client profile still lists the old address, verification_status 'flagged', flagged_date 4 days ago, cleared_date blank, exception_reason exactly 'No clock-out recorded', payroll_status 'held' until the billing review step approves it."
+      },
+      {
+        "name": "Caregivers",
+        "count": 34,
+        "fields": [
+          "caregiver_id",
+          "name",
+          "role",
+          "hire_date",
+          "weekly_scheduled_hours",
+          "evv_app_enrolled",
+          "pay_rate",
+          "primary_clients"
+        ],
+        "realism_notes": "About 70% personal care aides and 30% companions; weekly scheduled hours range 16-40 with a median near 32; about 90% are enrolled in the mobile app, and the rest clock in by telephone from the client's landline. A handful are new hires within their first 30 days. Dwayne Ellison, the caregiver on visit #41882, is a full-time aide with 38 hours scheduled this week and 11 primary clients."
+      },
+      {
+        "name": "Clients",
+        "count": 62,
+        "fields": [
+          "client_id",
+          "name",
+          "address",
+          "geofence_radius_m",
+          "program",
+          "authorized_hours_per_week",
+          "plan_of_care_on_file",
+          "address_updated_date"
+        ],
+        "realism_notes": "About 75% Medicaid waiver clients and 25% private pay; authorized hours run 6-35 per week; most have a signed plan of care on file within the last 6 months. Client H. Pruitt is the edge case: authorized_hours_per_week 20, program Medicaid waiver, plan_of_care_on_file true, address_updated_date 3 months ago, and the address still points at the apartment the client left two weeks ago, which is the root cause of the geofence flag on visit #41882."
+      },
+      {
+        "name": "Visit notes",
+        "count": 260,
+        "fields": [
+          "visit_id",
+          "author",
+          "timestamp",
+          "note_text",
+          "note_type"
+        ],
+        "realism_notes": "Two to three notes per flagged or cleared visit, timestamps relative to the visit date, in plain operational language ('Called caregiver, left voicemail', 'Family confirmed 4 hours by phone', 'Aggregator file re-pulled, clock-out still missing'). Note types are call, family contact, correction, and system."
+      }
+    ]
+  },
+  "tour": [
+    {
+      "id": "meet-marisol",
+      "screen_id": "story",
+      "target": "story-panel",
+      "title": "Meet Marisol",
+      "body": "Marisol verifies home care visits for a 32-caregiver agency. Here is her Monday morning before and after this tool."
+    },
+    {
+      "id": "one-visit-list",
+      "screen_id": "visits",
+      "target": "tracker-table",
+      "title": "Every visit in one list",
+      "body": "Last week's visits, already checked against the state EVV file, with the ones that need a person at the top."
+    },
+    {
+      "id": "visit-history",
+      "screen_id": "visit",
+      "target": "case-timeline",
+      "title": "The whole story of a visit",
+      "body": "Who was scheduled, when the caregiver clocked in, what the state aggregator returned, and every call and note since."
+    },
+    {
+      "id": "exception-flagged",
+      "screen_id": "exceptions",
+      "target": "denial-row-41882",
+      "title": "A visit missing its clock-out",
+      "body": "Dwayne clocked in at 8:02am and never clocked out. The visit is flagged with the reason in plain words, not a code."
+    },
+    {
+      "id": "root-cause",
+      "screen_id": "exceptions",
+      "target": "exception-detail",
+      "title": "The address that moved",
+      "body": "The family moved two apartments over and nobody updated the client profile, so a perfectly good visit looks wrong."
+    },
+    {
+      "id": "human-approval",
+      "screen_id": "billing-review",
+      "target": "approval-queue-item",
+      "title": "Marisol signs off",
+      "body": "Corrected hours, the family's confirmation, and one button. Nothing reaches the payer or payroll until she clicks it."
+    },
+    {
+      "id": "metrics-overview",
+      "screen_id": "visits",
+      "target": "metric-panel",
+      "title": "The numbers that matter",
+      "body": "Visits waiting, caregiver hours on hold, this week's exception rate, and how long exceptions take to clear."
+    },
+    {
+      "id": "how-it-works",
+      "screen_id": "architecture",
+      "target": "architecture-diagram",
+      "title": "How this would be built",
+      "body": "The verification queue sits between the scheduling system, the caregiver app, and the state EVV aggregator, with a human approval before anything reaches claims or payroll."
+    }
+  ],
+  "architecture": {
+    "nodes": [
+      {
+        "id": "scheduling",
+        "label": "Scheduling system",
+        "kind": "system"
+      },
+      {
+        "id": "caregiver-app",
+        "label": "Caregiver mobile app (clock-in and clock-out)",
+        "kind": "app"
+      },
+      {
+        "id": "evv-aggregator",
+        "label": "State EVV aggregator",
+        "kind": "system"
+      },
+      {
+        "id": "verification-ui",
+        "label": "Visit verification queue (this prototype)",
+        "kind": "app"
+      },
+      {
+        "id": "clearinghouse",
+        "label": "Claims clearinghouse",
+        "kind": "system"
+      },
+      {
+        "id": "payroll",
+        "label": "Payroll provider",
+        "kind": "system"
+      },
+      {
+        "id": "claude",
+        "label": "Claude (explains exception patterns)",
+        "kind": "model"
+      },
+      {
+        "id": "coordinator",
+        "label": "Marisol (verification coordinator)",
+        "kind": "human"
+      }
+    ],
+    "edges": [
+      {
+        "from": "scheduling",
+        "to": "verification-ui",
+        "label": "Scheduled visits and authorized hours"
+      },
+      {
+        "from": "caregiver-app",
+        "to": "verification-ui",
+        "label": "Clock-in and clock-out events"
+      },
+      {
+        "from": "evv-aggregator",
+        "to": "verification-ui",
+        "label": "State EVV confirmation file"
+      },
+      {
+        "from": "verification-ui",
+        "to": "claude",
+        "label": "Drafts a plain-language reason for each mismatch"
+      },
+      {
+        "from": "verification-ui",
+        "to": "coordinator",
+        "label": "Queues flagged visits for review"
+      },
+      {
+        "from": "coordinator",
+        "to": "clearinghouse",
+        "label": "Approved visits in the Friday claim batch"
+      },
+      {
+        "from": "coordinator",
+        "to": "payroll",
+        "label": "Approved hours for the pay run"
+      }
+    ],
+    "compliance_notes": [
+      "Visit and client data would be encrypted at rest and in transit",
+      "EVV records would be retained for the state's required retention period and exported in the state's mandated file format",
+      "Caregivers see only the clients assigned to them; coordinators see only the clients they manage",
+      "Every exception decision is written to an append-only audit log with the coordinator's name and timestamp",
+      "Any AI-assisted explanation of an exception runs under a signed BAA; no client PHI is sent to a model without one",
+      "No visit reaches the claim batch or the pay run without explicit coordinator approval"
+    ]
+  },
+  "design": {
+    "palette": "harbor-teal-gold",
+    "typefaces": {
+      "heading": "Source Serif 4",
+      "body": "Public Sans"
+    },
+    "rationale": "Teal with a muted gold accent reads as a home care agency rather than a hospital system, and a serif heading over a humanist sans keeps a dense visit table comfortable for staff who work in it all day."
+  },
+  "voice_demo": null
+}

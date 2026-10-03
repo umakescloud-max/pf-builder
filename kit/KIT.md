@@ -97,11 +97,10 @@ the builder must never import anything else to build a screen.
 
 ## Fonts
 
-Bundled via `@fontsource`, selectable by the architect's `design.typefaces`:
-IBM Plex Sans, Public Sans, Atkinson Hyperlegible, Figtree, Instrument Sans,
-Manrope, Work Sans, Source Serif 4, Newsreader, Spectral, Fraunces.
+Bundled via `@fontsource`, selectable by the architect's `design.typefaces`.
+Only two fonts are available: Public Sans and Source Serif 4.
 
-A brief may only name a typeface from this list for `heading` and `body`.
+A brief may only name one of these two typefaces for `heading` and `body`.
 `check:static` validates this.
 
 ## Anti-template rules
